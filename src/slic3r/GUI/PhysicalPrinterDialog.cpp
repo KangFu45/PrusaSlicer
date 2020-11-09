@@ -32,10 +32,6 @@
 #include "BitmapCache.hpp"
 #include "BonjourDialog.hpp"
 
-using Slic3r::GUI::format_wxstr;
-
-//static const std::pair<unsigned int, unsigned int> THUMBNAIL_SIZE_3MF = { 256, 256 };
-
 namespace Slic3r {
 namespace GUI {
 
@@ -155,8 +151,8 @@ void PresetForPrinter::msw_rescale()
 //          PhysicalPrinterDialog
 //------------------------------------------
 
-PhysicalPrinterDialog::PhysicalPrinterDialog(wxString printer_name) : 
-    DPIDialog(NULL, wxID_ANY, _L("Physical Printer"), wxDefaultPosition, wxSize(45 * wxGetApp().em_unit(), -1), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+PhysicalPrinterDialog::PhysicalPrinterDialog(wxWindow* parent, wxString printer_name) :
+    DPIDialog(parent, wxID_ANY, _L("Physical Printer"), wxDefaultPosition, wxSize(45 * wxGetApp().em_unit(), -1), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
     m_printer("", wxGetApp().preset_bundle->physical_printers.default_config())
 {
     SetFont(wxGetApp().normal_font());
@@ -173,7 +169,7 @@ PhysicalPrinterDialog::PhysicalPrinterDialog(wxString printer_name) :
         new_printer = false;
     }
 
-    wxStaticText* label_top = new wxStaticText(this, wxID_ANY, _L("Descriptive name for the printer device") + ":");
+    wxStaticText* label_top = new wxStaticText(this, wxID_ANY, _L("Descriptive name for the printer") + ":");
 
     m_add_preset_btn = new ScalableButton(this, wxID_ANY, "add_copies", "", wxDefaultSize, wxDefaultPosition, /*wxBU_LEFT | */wxBU_EXACTFIT);
     m_add_preset_btn->SetFont(wxGetApp().normal_font());
@@ -236,6 +232,8 @@ PhysicalPrinterDialog::PhysicalPrinterDialog(wxString printer_name) :
         m_printer_name->SetFocus();
         m_printer_name->SelectAll();
     }
+
+    this->CenterOnScreen();
 }
 
 PhysicalPrinterDialog::~PhysicalPrinterDialog()
@@ -246,10 +244,30 @@ PhysicalPrinterDialog::~PhysicalPrinterDialog()
     }
 }
 
+void PhysicalPrinterDialog::update_printers()
+{
+    wxBusyCursor wait;
+
+    std::unique_ptr<PrintHost> host(PrintHost::get_print_host(m_config));
+
+    wxArrayString printers;
+    Field *rs = m_optgroup->get_field("printhost_port");
+    try {
+        if (! host->get_printers(printers))
+            printers.clear();
+    } catch (const HostNetworkError &err) {
+        printers.clear();
+        show_error(this, _L("Connection to printers connected via the print host failed.") + "\n\n" + from_u8(err.what()));
+    }
+    Choice *choice = dynamic_cast<Choice*>(rs);
+    choice->set_values(printers);
+    printers.empty() ? rs->disable() : rs->enable();
+}
+
 void PhysicalPrinterDialog::build_printhost_settings(ConfigOptionsGroup* m_optgroup)
 {
     m_optgroup->m_on_change = [this](t_config_option_key opt_key, boost::any value) {
-        if (opt_key == "printhost_authorization_type")
+        if (opt_key == "host_type" || opt_key == "printhost_authorization_type")
             this->update();
     };
 
@@ -289,14 +307,27 @@ void PhysicalPrinterDialog::build_printhost_settings(ConfigOptionsGroup* m_optgr
                 return;
             }
             wxString msg;
-            if (host->test(msg)) {
+            bool result;
+            {
+                // Show a wait cursor during the connection test, as it is blocking UI.
+                wxBusyCursor wait;
+                result = host->test(msg);
+            }
+            if (result)
                 show_info(this, host->get_test_ok_msg(), _L("Success!"));
-            }
-            else {
+            else
                 show_error(this, host->get_test_failed_msg(msg));
-            }
             });
 
+        return sizer;
+    };
+
+    auto print_host_printers = [this, create_sizer_with_btn](wxWindow* parent) {
+        //add_scaled_button(parent, &m_printhost_port_browse_btn, "browse", _(L("Refresh Printers")), wxBU_LEFT | wxBU_EXACTFIT);
+        auto sizer = create_sizer_with_btn(parent, &m_printhost_port_browse_btn, "browse", _(L("Refresh Printers")));
+        ScalableButton* btn = m_printhost_port_browse_btn;
+        btn->SetFont(Slic3r::GUI::wxGetApp().normal_font());
+        btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent e) { update_printers(); });
         return sizer;
     };
 
@@ -313,6 +344,12 @@ void PhysicalPrinterDialog::build_printhost_settings(ConfigOptionsGroup* m_optgr
     option = m_optgroup->get_option("printhost_apikey");
     option.opt.width = Field::def_width_wider();
     m_optgroup->append_single_option_line(option);
+
+    option = m_optgroup->get_option("printhost_port");
+    option.opt.width = Field::def_width_wider();
+    Line port_line = m_optgroup->create_single_option_line(option);
+    port_line.append_widget(print_host_printers);
+    m_optgroup->append_line(port_line);
 
     const auto ca_file_hint = _u8L("HTTPS CA file is optional. It is only needed if you use HTTPS with a self-signed certificate.");
 
@@ -374,6 +411,15 @@ void PhysicalPrinterDialog::build_printhost_settings(ConfigOptionsGroup* m_optgr
         m_optgroup->append_single_option_line(option);
     }
 
+    m_optgroup->activate();
+
+    // Always fill in the "printhost_port" combo box from the config and select it.
+    {
+        Choice* choice = dynamic_cast<Choice*>(m_optgroup->get_field("printhost_port"));
+        choice->set_values({ m_config->opt_string("printhost_port") });
+        choice->set_selection();
+    }
+
     update();
 }
 
@@ -383,11 +429,15 @@ void PhysicalPrinterDialog::update()
 
     const PrinterTechnology tech = Preset::printer_technology(*m_config);
     // Only offer the host type selection for FFF, for SLA it's always the SL1 printer (at the moment)
+    bool supports_multiple_printers = false;
     if (tech == ptFFF) {
         m_optgroup->show_field("host_type");
         m_optgroup->hide_field("printhost_authorization_type");
+        m_optgroup->show_field("printhost_apikey", true);
         for (const std::string& opt_key : std::vector<std::string>{ "printhost_user", "printhost_password" })
             m_optgroup->hide_field(opt_key);
+        const auto opt = m_config->option<ConfigOptionEnum<PrintHostType>>("host_type");
+        supports_multiple_printers = opt && opt->value == htRepetier;
     }
     else {
         m_optgroup->set_value("host_type", int(PrintHostType::htOctoPrint), false);
@@ -398,10 +448,18 @@ void PhysicalPrinterDialog::update()
         AuthorizationType auth_type = m_config->option<ConfigOptionEnum<AuthorizationType>>("printhost_authorization_type")->value;
         m_optgroup->show_field("printhost_apikey", auth_type == AuthorizationType::atKeyPassword);
 
-        for (const std::string& opt_key : std::vector<std::string>{ "printhost_user", "printhost_password" })
+        for (const char *opt_key : { "printhost_user", "printhost_password" })
             m_optgroup->show_field(opt_key, auth_type == AuthorizationType::atUserPassword);
     }
 
+    m_optgroup->show_field("printhost_port", supports_multiple_printers);
+    m_printhost_port_browse_btn->Show(supports_multiple_printers);
+
+    std::unique_ptr<PrintHost> host(PrintHost::get_print_host(m_config));
+    m_printhost_test_btn->Enable(!m_config->opt_string("print_host").empty() && host->can_test());
+    m_printhost_browse_btn->Enable(host->has_auto_discovery());
+
+    this->SetSize(this->GetBestSize());
     this->Layout();
 }
 
@@ -434,6 +492,7 @@ void PhysicalPrinterDialog::on_dpi_changed(const wxRect& suggested_rect)
 {
     const int& em = em_unit();
 
+    m_add_preset_btn->msw_rescale();
     m_printhost_browse_btn->msw_rescale();
     m_printhost_test_btn->msw_rescale();
     if (m_printhost_cafile_browse_btn)
@@ -466,15 +525,17 @@ void PhysicalPrinterDialog::OnOK(wxEvent& event)
     }
 
     PhysicalPrinterCollection& printers = wxGetApp().preset_bundle->physical_printers;
-    const PhysicalPrinter* existing = printers.find_printer(into_u8(printer_name));
+    const PhysicalPrinter* existing = printers.find_printer(into_u8(printer_name), false);
     if (existing && into_u8(printer_name) != printers.get_selected_printer_name())
     {
-        wxString msg_text = from_u8((boost::format(_u8L("Printer with name \"%1%\" already exists.")) % printer_name).str());
+        wxString msg_text = from_u8((boost::format(_u8L("Printer with name \"%1%\" already exists.")) % existing->name/*printer_name*/).str());
         msg_text += "\n" + _L("Replace?");
         wxMessageDialog dialog(nullptr, msg_text, _L("Warning"), wxICON_WARNING | wxYES | wxNO);
 
         if (dialog.ShowModal() == wxID_NO)
             return;
+
+        m_printer.name = existing->name;
     }
 
     std::set<std::string> repeat_presets;
@@ -491,10 +552,10 @@ void PhysicalPrinterDialog::OnOK(wxEvent& event)
             repeatable_presets += "    " + from_u8(preset_name) + "\n";
         repeatable_presets += "\n";
 
-        wxString msg_text = from_u8((boost::format(_u8L("Next printer preset(s) is(are) duplicated:%1%"
-                                                        "Should I add it(they) just once for the printer \"%2%\" and close the Editing Dialog?")) % repeatable_presets % printer_name).str());
-        wxMessageDialog dialog(nullptr, msg_text, _L("Warning"), wxICON_WARNING | wxYES | wxNO);
-        if (dialog.ShowModal() == wxID_NO)
+        wxString msg_text = from_u8((boost::format(_u8L("Following printer preset(s) is duplicated:%1%"
+                                                        "The above preset for printer \"%2%\" will be used just once.")) % repeatable_presets % printer_name).str());
+        wxMessageDialog dialog(nullptr, msg_text, _L("Warning"), wxICON_WARNING | wxOK | wxCANCEL);
+        if (dialog.ShowModal() == wxID_CANCEL)
             return;
     }
 
@@ -537,7 +598,7 @@ void PhysicalPrinterDialog::AddPreset(wxEvent& event)
 void PhysicalPrinterDialog::DeletePreset(PresetForPrinter* preset_for_printer)
 {
     if (m_presets.size() == 1) {
-        wxString msg_text = _L("It's not possible to delete last related preset for the printer.");
+        wxString msg_text = _L("It's not possible to delete the last related preset for the printer.");
         wxMessageDialog dialog(nullptr, msg_text, _L("Infornation"), wxICON_INFORMATION | wxOK);
         dialog.ShowModal();
         return;

@@ -23,7 +23,7 @@
 
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Utils.hpp"
-#include "3DScene.hpp"
+#include "3DScene.hpp"+
 #include "GUI.hpp"
 #include "I18N.hpp"
 #include "Search.hpp"
@@ -42,14 +42,16 @@ static const std::map<const char, std::string> font_icons = {
     {ImGui::PrinterSlaIconMarker  , "sla_printer"                   },
     {ImGui::FilamentIconMarker    , "spool"                         },
     {ImGui::MaterialIconMarker    , "resin"                         },
-	{ImGui::CloseIconMarker       , "notification_close"            },
-	{ImGui::CloseIconHoverMarker  , "notification_close_hover"      },
-	//{ImGui::TimerDotMarker      , "timer_dot"                     },
-    //{ImGui::TimerDotEmptyMarker , "timer_dot_empty"               },
-    {ImGui::MinimalizeMarker      , "notification_minimalize"       },
-    {ImGui::MinimalizeHoverMarker , "notification_minimalize_hover" },
-	{ImGui::WarningMarker         , "notification_warning"          },
-    {ImGui::ErrorMarker           , "notification_error"            }
+    {ImGui::MinimalizeButton      , "notification_minimalize"       },
+    {ImGui::MinimalizeHoverButton , "notification_minimalize_hover" }
+};
+static const std::map<const char, std::string> font_icons_large = {
+    {ImGui::CloseNotifButton       , "notification_close"            },
+    {ImGui::CloseNotifHoverButton  , "notification_close_hover"      },
+    {ImGui::EjectButton            , "notification_eject_sd"         },
+    {ImGui::EjectHoverButton       , "notification_eject_sd_hover"   },
+    {ImGui::WarningMarker          , "notification_warning"          },
+    {ImGui::ErrorMarker            , "notification_error"            }
 };
 
 const ImVec4 ImGuiWrapper::COL_GREY_DARK         = { 0.333f, 0.333f, 0.333f, 1.0f };
@@ -57,8 +59,8 @@ const ImVec4 ImGuiWrapper::COL_GREY_LIGHT        = { 0.4f, 0.4f, 0.4f, 1.0f };
 const ImVec4 ImGuiWrapper::COL_ORANGE_DARK       = { 0.757f, 0.404f, 0.216f, 1.0f };
 const ImVec4 ImGuiWrapper::COL_ORANGE_LIGHT      = { 1.0f, 0.49f, 0.216f, 1.0f };
 const ImVec4 ImGuiWrapper::COL_WINDOW_BACKGROUND = { 0.133f, 0.133f, 0.133f, 0.8f };
-const ImVec4 ImGuiWrapper::COL_BUTTON_BACKGROUND = { 0.233f, 0.233f, 0.233f, 1.0f };
-const ImVec4 ImGuiWrapper::COL_BUTTON_HOVERED    = { 0.433f, 0.433f, 0.433f, 1.8f };
+const ImVec4 ImGuiWrapper::COL_BUTTON_BACKGROUND = COL_ORANGE_DARK;
+const ImVec4 ImGuiWrapper::COL_BUTTON_HOVERED    = COL_ORANGE_LIGHT;
 const ImVec4 ImGuiWrapper::COL_BUTTON_ACTIVE     = ImGuiWrapper::COL_BUTTON_HOVERED;
 
 ImGuiWrapper::ImGuiWrapper()
@@ -948,6 +950,8 @@ void ImGuiWrapper::init_font(bool compress)
     // add rectangles for the icons to the font atlas
     for (auto& icon : font_icons)
         io.Fonts->AddCustomRectFontGlyph(font, icon.first, icon_sz, icon_sz, 3.0 * font_scale + icon_sz);
+    for (auto& icon : font_icons_large)
+        io.Fonts->AddCustomRectFontGlyph(font, icon.first, icon_sz * 2, icon_sz * 2, 3.0 * font_scale + icon_sz * 2);
 
     // Build texture atlas
     unsigned char* pixels;
@@ -956,6 +960,20 @@ void ImGuiWrapper::init_font(bool compress)
 
     // Fill rectangles from the SVG-icons
     for (auto icon : font_icons) {
+        if (const ImFontAtlas::CustomRect* rect = io.Fonts->GetCustomRectByIndex(rect_id)) {
+            std::vector<unsigned char> raw_data = load_svg(icon.second, icon_sz, icon_sz);
+            const ImU32* pIn = (ImU32*)raw_data.data();
+            for (int y = 0; y < icon_sz; y++) {
+                ImU32* pOut = (ImU32*)pixels + (rect->Y + y) * width + (rect->X);
+                for (int x = 0; x < icon_sz; x++)
+                    *pOut++ = *pIn++;
+            }
+        }
+        rect_id++;
+    }
+    icon_sz = lround(32 * font_scale); // default size of large icon is 32 px
+    
+    for (auto icon : font_icons_large) {
         if (const ImFontAtlas::CustomRect* rect = io.Fonts->GetCustomRectByIndex(rect_id)) {
             std::vector<unsigned char> raw_data = load_svg(icon.second, icon_sz, icon_sz);
             const ImU32* pIn = (ImU32*)raw_data.data();

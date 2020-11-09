@@ -30,23 +30,25 @@ enum class SlicingMode : uint32_t;
 class Layer;
 class SupportLayer;
 
-namespace FillAdaptive_Internal {
+namespace FillAdaptive {
     struct Octree;
     struct OctreeDeleter;
     using OctreePtr = std::unique_ptr<Octree, OctreeDeleter>;
 };
 
 // Print step IDs for keeping track of the print state.
+// The Print steps are applied in this order.
 enum PrintStep {
-    psSkirt, 
-    psBrim,
-    // Synonym for the last step before the Wipe Tower / Tool Ordering, for the G-code preview slider to understand that 
-    // all the extrusions are there for the layer slider to add color changes etc.
-    psExtrusionPaths = psBrim,
     psWipeTower,
+    // Ordering of the tools on PrintObjects for a multi-material print.
     // psToolOrdering is a synonym to psWipeTower, as the Wipe Tower calculates and modifies the ToolOrdering,
     // while if printing without the Wipe Tower, the ToolOrdering is calculated as well.
     psToolOrdering = psWipeTower,
+    psSkirt, 
+    psBrim,
+    // Last step before G-code export, after this step is finished, the initial extrusion path preview
+    // should be refreshed.
+    psSlicingFinished = psBrim,
     psGCodeExport,
     psCount,
 };
@@ -241,7 +243,7 @@ private:
     void discover_horizontal_shells();
     void combine_infill();
     void _generate_support_material();
-    std::pair<FillAdaptive_Internal::OctreePtr, FillAdaptive_Internal::OctreePtr> prepare_adaptive_infill_data();
+    std::pair<FillAdaptive::OctreePtr, FillAdaptive::OctreePtr> prepare_adaptive_infill_data();
 
     // XYZ in scaled coordinates
     Vec3crd									m_size;
@@ -370,6 +372,8 @@ public:
     // a cancellation callback is executed to stop the background processing before the operation.
     void                clear() override;
     bool                empty() const override { return m_objects.empty(); }
+    // List of existing PrintObject IDs, to remove notifications for non-existent IDs.
+    std::vector<ObjectID> print_object_ids() const override;
 
     ApplyStatus         apply(const Model &model, DynamicPrintConfig config) override;
 

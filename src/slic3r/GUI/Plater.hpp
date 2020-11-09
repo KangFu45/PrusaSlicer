@@ -11,6 +11,9 @@
 
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/BoundingBox.hpp"
+#if ENABLE_GCODE_VIEWER
+#include "libslic3r/GCode/GCodeProcessor.hpp"
+#endif // ENABLE_GCODE_VIEWER
 #include "Jobs/Job.hpp"
 #include "Search.hpp"
 
@@ -72,6 +75,7 @@ public:
     void update_all_preset_comboboxes();
     void update_presets(Slic3r::Preset::Type preset_type);
     void update_mode_sizer() const;
+    void change_top_border_for_mode_sizer(bool increase_border);
     void update_reslice_btn_tooltip() const;
     void msw_rescale();
     void sys_color_changed();
@@ -143,6 +147,7 @@ public:
 #if ENABLE_GCODE_VIEWER
     void load_gcode();
     void load_gcode(const wxString& filename);
+    void refresh_print();
 #endif // ENABLE_GCODE_VIEWER
 
     std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files, bool load_model = true, bool load_config = true, bool imperial_units = false);
@@ -164,16 +169,11 @@ public:
     bool is_sidebar_collapsed() const;
     void collapse_sidebar(bool show);
 
-#if ENABLE_SLOPE_RENDERING
-    bool is_view3D_slope_shown() const;
-    void show_view3D_slope(bool show);
-
     bool is_view3D_layers_editing_enabled() const;
-#endif // ENABLE_SLOPE_RENDERING
 
     // Called after the Preferences dialog is closed and the program settings are saved.
     // Update the UI based on the current preferences.
-    void update_ui_from_settings();
+    void update_ui_from_settings(bool apply_free_camera_correction = true);
 
     void select_all();
     void deselect_all();
@@ -236,8 +236,13 @@ public:
     void force_print_bed_update();
     // On activating the parent window.
     void on_activate();
+#if ENABLE_GCODE_VIEWER
+    std::vector<std::string> get_extruder_colors_from_plater_config(const GCodeProcessor::Result* const result = nullptr) const;
+    std::vector<std::string> get_colors_for_color_print(const GCodeProcessor::Result* const result = nullptr) const;
+#else
     std::vector<std::string> get_extruder_colors_from_plater_config() const;
     std::vector<std::string> get_colors_for_color_print() const;
+#endif // ENABLE_GCODE_VIEWER
 
     void update_object_menu();
     void show_action_buttons(const bool is_ready_to_slice) const;
@@ -321,6 +326,7 @@ public:
 #if ENABLE_GCODE_VIEWER
     void update_preview_bottom_toolbar();
     void update_preview_moves_slider();
+    void enable_preview_moves_slider(bool enable);
 
     void reset_gcode_toolpaths();
     void reset_last_loaded_gcode() { m_last_loaded_gcode = ""; }
@@ -336,6 +342,8 @@ public:
     
 	const NotificationManager* get_notification_manager() const;
 	NotificationManager* get_notification_manager();
+
+    void bring_instance_forward();
 
     // ROII wrapper for suppressing the Undo / Redo snapshot to be taken.
 	class SuppressSnapshots

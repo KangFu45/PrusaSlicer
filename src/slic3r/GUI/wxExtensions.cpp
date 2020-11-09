@@ -696,6 +696,17 @@ void ModeSizer::SetMode(const int mode)
         m_mode_btns[m]->SetState(int(m) == mode);
 }
 
+void ModeSizer::set_items_flag(int flag)
+{
+    for (wxSizerItem* item : this->GetChildren())
+        item->SetFlag(flag);
+}
+
+void ModeSizer::set_items_border(int border)
+{
+    for (wxSizerItem* item : this->GetChildren())
+        item->SetBorder(border);
+}
 
 void ModeSizer::msw_rescale()
 {
@@ -787,10 +798,12 @@ ScalableButton::ScalableButton( wxWindow *          parent,
                                 const wxSize&       size /* = wxDefaultSize*/,
                                 const wxPoint&      pos /* = wxDefaultPosition*/,
                                 long                style /*= wxBU_EXACTFIT | wxNO_BORDER*/,
-                                bool                use_default_disabled_bitmap/* = false*/) :
+                                bool                use_default_disabled_bitmap/* = false*/,
+                                int                 bmp_px_cnt/* = 16*/) :
     m_parent(parent),
     m_current_icon_name(icon_name),
-    m_use_default_disabled_bitmap (use_default_disabled_bitmap)
+    m_use_default_disabled_bitmap (use_default_disabled_bitmap),
+    m_px_cnt(bmp_px_cnt)
 {
     Create(parent, id, label, pos, size, style);
 #ifdef __WXMSW__
@@ -798,7 +811,7 @@ ScalableButton::ScalableButton( wxWindow *          parent,
         SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
 #endif // __WXMSW__
 
-    SetBitmap(create_scaled_bitmap(icon_name, parent));
+    SetBitmap(create_scaled_bitmap(icon_name, parent, m_px_cnt));
     if (m_use_default_disabled_bitmap)
         SetBitmapDisabled(create_scaled_bitmap(m_current_icon_name, m_parent, m_px_cnt, true));
 

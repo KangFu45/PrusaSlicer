@@ -318,7 +318,7 @@ void export_group_fills_to_svg(const char *path, const std::vector<SurfaceFill> 
 #endif
 
 // friend to Layer
-void Layer::make_fills(FillAdaptive_Internal::Octree* adaptive_fill_octree, FillAdaptive_Internal::Octree* support_fill_octree)
+void Layer::make_fills(FillAdaptive::Octree* adaptive_fill_octree, FillAdaptive::Octree* support_fill_octree)
 {
 	for (LayerRegion *layerm : m_regions)
 		layerm->fills.clear();
@@ -535,7 +535,7 @@ void Layer::make_ironing()
     fill_params.density 	 = 1.;
 //    fill_params.dont_connect = true;
     fill_params.dont_connect = false;
-    fill_params.monotonous   = true;
+    fill_params.monotonic    = true;
 
 	for (size_t i = 0; i < by_extruder.size(); ++ i) {
 		// Find span of regions equivalent to the ironing operation.
@@ -579,7 +579,7 @@ void Layer::make_ironing()
 		        // Save into layer.
 				ExtrusionEntityCollection *eec = nullptr;
 		        ironing_params.layerm->fills.entities.push_back(eec = new ExtrusionEntityCollection());
-		        // Don't sort the ironing infill lines as they are monotonously ordered.
+		        // Don't sort the ironing infill lines as they are monotonicly ordered.
 				eec->no_sort = true;
 		        extrusion_entities_append_paths(
 		            eec->entities, std::move(polylines),

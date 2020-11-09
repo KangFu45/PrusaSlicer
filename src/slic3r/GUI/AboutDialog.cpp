@@ -38,12 +38,12 @@ void AboutDialogLogo::onRepaint(wxEvent &event)
 // -----------------------------------------
 CopyrightsDialog::CopyrightsDialog()
 #if ENABLE_GCODE_VIEWER
-    : DPIDialog(NULL, wxID_ANY, from_u8((boost::format("%1% - %2%")
+    : DPIDialog((wxWindow*)wxGetApp().mainframe, wxID_ANY, from_u8((boost::format("%1% - %2%")
         % (wxGetApp().is_editor() ? SLIC3R_APP_NAME : GCODEVIEWER_APP_NAME)
         % _utf8(L("Portions copyright"))).str()),
         wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
 #else
-    : DPIDialog(NULL, wxID_ANY, from_u8((boost::format("%1% - %2%")
+    : DPIDialog((wxWindow*)wxGetApp().mainframe, wxID_ANY, from_u8((boost::format("%1% - %2%")
                                                        % SLIC3R_APP_NAME
                                                        % _utf8(L("Portions copyright"))).str()),
                 wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
@@ -59,7 +59,7 @@ CopyrightsDialog::CopyrightsDialog()
     m_html = new wxHtmlWindow(this, wxID_ANY, wxDefaultPosition, 
                               wxSize(40 * em_unit(), 20 * em_unit()), wxHW_SCROLLBAR_AUTO);
 
-    wxFont font = get_default_font_for_dpi(get_dpi_for_window(this));// GetFont();
+    wxFont font = get_default_font(this);
     const int fs = font.GetPointSize();
     const int fs2 = static_cast<int>(1.2f*fs);
     int size[] = { fs, fs, fs, fs, fs2, fs2, fs2 };
@@ -209,10 +209,10 @@ void CopyrightsDialog::onCloseDialog(wxEvent &)
 
 AboutDialog::AboutDialog()
 #if ENABLE_GCODE_VIEWER
-    : DPIDialog(NULL, wxID_ANY, from_u8((boost::format(_utf8(L("About %s"))) % (wxGetApp().is_editor() ? SLIC3R_APP_NAME : GCODEVIEWER_APP_NAME)).str()), wxDefaultPosition,
+    : DPIDialog((wxWindow*)wxGetApp().mainframe, wxID_ANY, from_u8((boost::format(_utf8(L("About %s"))) % (wxGetApp().is_editor() ? SLIC3R_APP_NAME : GCODEVIEWER_APP_NAME)).str()), wxDefaultPosition,
         wxDefaultSize, /*wxCAPTION*/wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
 #else
-    : DPIDialog(NULL, wxID_ANY, from_u8((boost::format(_utf8(L("About %s"))) % SLIC3R_APP_NAME).str()), wxDefaultPosition,
+    : DPIDialog((wxWindow*)wxGetApp().mainframe, wxID_ANY, from_u8((boost::format(_utf8(L("About %s"))) % SLIC3R_APP_NAME).str()), wxDefaultPosition,
                 wxDefaultSize, /*wxCAPTION*/wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
 #endif // ENABLE_GCODE_VIEWER
 {
@@ -269,7 +269,7 @@ AboutDialog::AboutDialog()
     m_html = new wxHtmlWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHW_SCROLLBAR_AUTO/*NEVER*/);
     {
         m_html->SetMinSize(wxSize(-1, 16 * wxGetApp().em_unit()));
-        wxFont font = get_default_font_for_dpi(get_dpi_for_window(this));// GetFont();
+        wxFont font = get_default_font(this);
         const auto text_clr = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
 		auto text_clr_str = wxString::Format(wxT("#%02X%02X%02X"), text_clr.Red(), text_clr.Green(), text_clr.Blue());
 		auto bgr_clr_str = wxString::Format(wxT("#%02X%02X%02X"), bgr_clr.Red(), bgr_clr.Green(), bgr_clr.Blue());
