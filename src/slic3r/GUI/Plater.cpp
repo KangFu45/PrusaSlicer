@@ -3455,7 +3455,7 @@ void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
         }
 
         this->statusbar()->set_progress(evt.status.percent);
-        this->statusbar()->set_status_text(_(evt.status.text) + wxString::FromUTF8("…"));
+        this->statusbar()->set_status_text(_(evt.status.text) + wxString::FromUTF8("..."));
     }
     if (evt.status.flags & (PrintBase::SlicingStatus::RELOAD_SCENE | PrintBase::SlicingStatus::RELOAD_SLA_SUPPORT_POINTS)) {
         switch (this->printer_technology) {

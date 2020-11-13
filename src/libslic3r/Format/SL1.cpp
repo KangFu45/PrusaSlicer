@@ -365,6 +365,15 @@ void fill_iniconf(ConfMap &m, const SLAPrint &print)
     
     int num_fade = print.default_object_config().faded_layers.getInt();
     num_fade = num_fade >= 0 ? num_fade : 0;
+
+    BoundingBoxf3 box;
+    PrintObjects ojs = print.objects();
+    for (auto oj = ojs.begin(); oj != ojs.end(); ++oj)
+        box.merge((*oj)->get_mesh_to_print().bounding_box());
+
+    m["width"] = std::to_string(box.max.x() - box.min.x());
+    m["length"] = std::to_string(box.max.y() - box.min.y());
+    m["height"] = std::to_string(box.max.z() - box.min.z());
     
     m["usedMaterial"] = std::to_string(used_material);
     m["numFade"]      = std::to_string(num_fade);
