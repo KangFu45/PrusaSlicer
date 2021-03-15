@@ -1,6 +1,7 @@
 #ifndef slic3r_SLAPrint_hpp_
 #define slic3r_SLAPrint_hpp_
 
+#include <cstdint>
 #include <mutex>
 #include "PrintBase.hpp"
 #include "SLA/RasterBase.hpp"
@@ -37,7 +38,7 @@ using _SLAPrintObjectBase =
 
 // Layers according to quantized height levels. This will be consumed by
 // the printer (rasterizer) in the SLAPrint class.
-// using coord_t = long long;
+// using coord_t = int64_t;
 
 enum SliceOrigin { soSupport, soModel };
 
@@ -84,6 +85,10 @@ public:
     // Get the mesh that is going to be printed with all the modifications
     // like hollowing and drilled holes.
     const TriangleMesh & get_mesh_to_print() const {
+        return (m_hollowing_data && is_step_done(slaposDrillHoles)) ? m_hollowing_data->hollow_mesh_with_holes_trimmed : transformed_mesh();
+    }
+
+    const TriangleMesh & get_mesh_to_slice() const {
         return (m_hollowing_data && is_step_done(slaposDrillHoles)) ? m_hollowing_data->hollow_mesh_with_holes : transformed_mesh();
     }
 
@@ -326,9 +331,10 @@ private:
     class HollowingData
     {
     public:
-        
-        TriangleMesh interior;
+
+        sla::InteriorPtr interior;
         mutable TriangleMesh hollow_mesh_with_holes; // caching the complete hollowed mesh
+        mutable TriangleMesh hollow_mesh_with_holes_trimmed;
     };
     
     std::unique_ptr<HollowingData> m_hollowing_data;
@@ -350,6 +356,7 @@ struct SLAPrintStatistics
     size_t                          fast_layers_count;
     double                          total_cost;
     double                          total_weight;
+    std::vector<double>             layers_times;
 
     // Config with the filled in print statistics.
     DynamicConfig           config() const;
@@ -366,6 +373,7 @@ struct SLAPrintStatistics
         fast_layers_count = 0;
         total_cost = 0.;
         total_weight = 0.;
+        layers_times.clear();
     }
 };
 
@@ -421,7 +429,7 @@ public:
     void                clear() override;
     bool                empty() const override { return m_objects.empty(); }
     // List of existing PrintObject IDs, to remove notifications for non-existent IDs.
-    std::vector<ObjectID> print_object_ids() const;
+    std::vector<ObjectID> print_object_ids() const override;
     ApplyStatus         apply(const Model &model, DynamicPrintConfig config) override;
     void                set_task(const TaskParams &params) override;
     void                process() override;
@@ -455,7 +463,7 @@ public:
 
     const SLAPrintStatistics&   print_statistics() const { return m_print_statistics; }
 
-    std::string validate() const override;
+    std::string validate(std::string* warning = nullptr) const override;
 
     // An aggregation of SliceRecord-s from all the print objects for each
     // occupied layer. Slice record levels dont have to match exactly.

@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <optional>
+#include <cstdint>
 
 #ifdef _WIN32
 #include <strsafe.h>
@@ -27,8 +28,32 @@
 #endif //__linux__
 
 namespace Slic3r {
+
+#ifdef __APPLE__
+	bool unlock_lockfile(const std::string& name, const std::string& path)
+	{
+		std::string dest_dir = path + name;
+		//BOOST_LOG_TRIVIAL(debug) << "full lock path: " << dest_dir;
+		struct      flock fl;
+		int         fdlock;
+		fl.l_type = F_UNLCK;
+		fl.l_whence = SEEK_SET;
+		fl.l_start = 0;
+		fl.l_len = 1;
+		if ((fdlock = open(dest_dir.c_str(), O_WRONLY | O_CREAT, 0666)) == -1)
+			return false;
+
+		if (fcntl(fdlock, F_SETLK, &fl) == -1)
+			return false;
+
+		return true;
+	}
+#endif //__APPLE__
+
 namespace instance_check_internal
 {
+	static bool        s_created_lockfile = false;
+
 	struct CommandLineAnalysis
 	{
 		std::optional<bool>	should_send;
@@ -40,7 +65,7 @@ namespace instance_check_internal
 		//if (argc < 2)
 		//	return ret;
 		std::vector<std::string> arguments { argv[0] };
-		for (size_t i = 1; i < argc; ++i) {
+        for (int i = 1; i < argc; ++i) {
 			const std::string token = argv[i];
 			// Processing of boolean command line arguments shall match DynamicConfig::read_cli().
 			if (token == "--single-instance")
@@ -79,13 +104,13 @@ namespace instance_check_internal
 			return true;
 		std::wstring classNameString(className);
 		std::wstring wndTextString(wndText);
-		if (wndTextString.find(L"PrusaSlicer") == 0 && classNameString == L"wxWindowNR") {
+		if (wndTextString.find(L"PrusaSlicer") != std::wstring::npos && classNameString == L"wxWindowNR") {
 			//check if other instances has same instance hash
 			//if not it is not same version(binary) as this version 
-			HANDLE                handle = GetProp(hwnd, L"Instance_Hash_Minor");
-			unsigned long long    other_instance_hash = PtrToUint(handle);
-			unsigned long long    other_instance_hash_major;
-			unsigned long long    my_instance_hash = GUI::wxGetApp().get_instance_hash_int();
+			HANDLE   handle = GetProp(hwnd, L"Instance_Hash_Minor");
+			uint64_t other_instance_hash = PtrToUint(handle);
+			uint64_t other_instance_hash_major;
+			uint64_t my_instance_hash = GUI::wxGetApp().get_instance_hash_int();
 			handle = GetProp(hwnd, L"Instance_Hash_Major");
 			other_instance_hash_major = PtrToUint(handle);
 			other_instance_hash_major = other_instance_hash_major << 32;
@@ -144,13 +169,39 @@ namespace instance_check_internal
                 BOOST_LOG_TRIVIAL(debug) << "get_lock(): unable to create datadir !!!";
         }
 
-		if ((fdlock = open(dest_dir.c_str(), O_WRONLY | O_CREAT, 0666)) == -1)
+		if ((fdlock = open(dest_dir.c_str(), O_WRONLY | O_CREAT, 0666)) == -1) {
+			BOOST_LOG_TRIVIAL(debug) << "Not creating lockfile.";
 			return true;
+		}
 
-		if (fcntl(fdlock, F_SETLK, &fl) == -1)
+		if (fcntl(fdlock, F_SETLK, &fl) == -1) {
+			BOOST_LOG_TRIVIAL(debug) << "Not creating lockfile.";
 			return true;
+		}
 
+		BOOST_LOG_TRIVIAL(debug) << "Creating lockfile.";
+		s_created_lockfile = true;
 		return false;
+	}
+
+	// Deletes lockfile if it was created by this instance
+	// The Lockfile is created only on Linux a OSX. On Win, its handled by named mutex.
+	// The lockfile is deleted by instance it created it.
+	// On OSX message is passed to other instances to create a new lockfile after deletition.
+	static void delete_lockfile()
+	{
+		//BOOST_LOG_TRIVIAL(debug) << "shuting down with lockfile: " << l_created_lockfile;
+		if (s_created_lockfile)
+		{
+			std::string path = data_dir() + "/cache/" + GUI::wxGetApp().get_instance_hash_string() + ".lock";
+			if( remove( path.c_str() ) != 0 )
+	   			BOOST_LOG_TRIVIAL(error) << "Failed to delete lockfile " << path;
+	  		//else
+	    	//	BOOST_LOG_TRIVIAL(error) << "success delete lockfile " << path;
+#ifdef __APPLE__
+	   		send_message_mac_closing(GUI::wxGetApp().get_instance_hash_string(),GUI::wxGetApp().get_instance_hash_string());
+#endif	    
+		}
 	}
 
 #endif //WIN32
@@ -179,7 +230,7 @@ namespace instance_check_internal
 		if ( !checker->IsAnotherRunning() ) */
 		{
 			DBusMessage* msg;
-			DBusMessageIter args;
+            // DBusMessageIter args;
 			DBusConnection* conn;
 			DBusError 		err;
 			dbus_uint32_t 	serial = 0;
@@ -251,12 +302,41 @@ namespace instance_check_internal
 
 bool instance_check(int argc, char** argv, bool app_config_single_instance)
 {
-	std::size_t hashed_path = 
+	std::size_t hashed_path;
 #ifdef _WIN32
-		std::hash<std::string>{}(boost::filesystem::system_complete(argv[0]).string());
+	hashed_path = std::hash<std::string>{}(boost::filesystem::system_complete(argv[0]).string());
 #else
-		std::hash<std::string>{}(boost::filesystem::canonical(boost::filesystem::system_complete(argv[0])).string());
-#endif // win32
+	boost::system::error_code ec;
+#ifdef __linux__
+	// If executed by an AppImage, start the AppImage, not the main process.
+	// see https://docs.appimage.org/packaging-guide/environment-variables.html#id2
+	const char *appimage_env = std::getenv("APPIMAGE");
+	bool appimage_env_valid = false;
+	if (appimage_env) {
+		try {
+			auto appimage_path = boost::filesystem::canonical(boost::filesystem::path(appimage_env));
+			if (boost::filesystem::exists(appimage_path)) {
+				hashed_path = std::hash<std::string>{}(appimage_path.string());
+				appimage_env_valid = true;
+			}
+		} catch (std::exception &) {			
+		}
+		if (! appimage_env_valid)
+			BOOST_LOG_TRIVIAL(error) << "APPIMAGE environment variable was set, but it does not point to a valid file: " << appimage_env;
+	}
+	if (! appimage_env_valid)
+#endif // __linux__
+		hashed_path = std::hash<std::string>{}(boost::filesystem::canonical(boost::filesystem::system_complete(argv[0]), ec).string());
+	if (ec.value() > 0) { // canonical was not able to find the executable (can happen with appimage on some systems. Does it fail on Fuse file systems?)
+		ec.clear();
+		// Compose path with boost canonical of folder and filename
+		hashed_path = std::hash<std::string>{}(boost::filesystem::canonical(boost::filesystem::system_complete(argv[0]).parent_path(), ec).string() + "/" + boost::filesystem::system_complete(argv[0]).filename().string());
+		if (ec.value() > 0) {
+			// Still not valid, process without canonical
+			hashed_path = std::hash<std::string>{}(boost::filesystem::system_complete(argv[0]).string());
+		}
+	}
+#endif // _WIN32
 
 	std::string lock_name 	= std::to_string(hashed_path);
 	GUI::wxGetApp().set_instance_hash(hashed_path);
@@ -265,7 +345,7 @@ bool instance_check(int argc, char** argv, bool app_config_single_instance)
 	if (! cla.should_send.has_value())
 		cla.should_send = app_config_single_instance;
 #ifdef _WIN32
-	GUI::wxGetApp().init_single_instance_checker(lock_name + ".lock", data_dir() + "/cache/");
+	GUI::wxGetApp().init_single_instance_checker(lock_name + ".lock", data_dir() + "\\cache\\");
 	if (cla.should_send.value() && GUI::wxGetApp().single_instance_checker()->IsAnotherRunning()) {
 #else // mac & linx
 	// get_lock() creates the lockfile therefore *cla.should_send is checked after
@@ -276,29 +356,11 @@ bool instance_check(int argc, char** argv, bool app_config_single_instance)
 		return true;
 	}
 	BOOST_LOG_TRIVIAL(info) << "instance check: Another instance not found or single-instance not set.";
+	
 	return false;
 }
 
-#ifdef __APPLE__
-bool unlock_lockfile(const std::string& name, const std::string& path)
-{
-	std::string dest_dir = path + name;
-	//BOOST_LOG_TRIVIAL(debug) << "full lock path: " << dest_dir;
-	struct      flock fl;
-	int         fdlock;
-	fl.l_type = F_UNLCK;
-	fl.l_whence = SEEK_SET;
-	fl.l_start = 0;
-	fl.l_len = 1;
-	if ((fdlock = open(dest_dir.c_str(), O_WRONLY | O_CREAT, 0666)) == -1)
-		return false;
 
-	if (fcntl(fdlock, F_SETLK, &fl) == -1)
-		return false;
-
-	return true;
-}
-#endif //__APPLE__
 namespace GUI {
 
 wxDEFINE_EVENT(EVT_LOAD_MODEL_OTHER_INSTANCE, LoadFromOtherInstanceEvent);
@@ -325,6 +387,9 @@ void OtherInstanceMessageHandler::init(wxEvtHandler* callback_evt_handler)
 void OtherInstanceMessageHandler::shutdown(MainFrame* main_frame)
 {
 	BOOST_LOG_TRIVIAL(debug) << "message handler shutdown().";
+#ifndef _WIN32
+	instance_check_internal::delete_lockfile();
+#endif //!_WIN32
 	assert(m_initialized);
 	if (m_initialized) {
 #ifdef _WIN32
@@ -441,6 +506,13 @@ void OtherInstanceMessageHandler::handle_message(const std::string& message)
 		//}
 	}
 }
+
+#ifdef __APPLE__
+void OtherInstanceMessageHandler::handle_message_other_closed() 
+{
+	instance_check_internal::get_lock(wxGetApp().get_instance_hash_string() + ".lock", data_dir() + "/cache/");
+}
+#endif //__APPLE__
 
 #ifdef BACKGROUND_MESSAGE_LISTENER
 

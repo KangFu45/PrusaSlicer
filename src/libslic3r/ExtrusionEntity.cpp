@@ -14,12 +14,12 @@ namespace Slic3r {
     
 void ExtrusionPath::intersect_expolygons(const ExPolygonCollection &collection, ExtrusionEntityCollection* retval) const
 {
-    this->_inflate_collection(intersection_pl(this->polyline, (Polygons)collection), retval);
+    this->_inflate_collection(intersection_pl((Polylines)polyline, to_polygons(collection.expolygons)), retval);
 }
 
 void ExtrusionPath::subtract_expolygons(const ExPolygonCollection &collection, ExtrusionEntityCollection* retval) const
 {
-    this->_inflate_collection(diff_pl(this->polyline, (Polygons)collection), retval);
+    this->_inflate_collection(diff_pl((Polylines)this->polyline, to_polygons(collection.expolygons)), retval);
 }
 
 void ExtrusionPath::clip_end(double distance)
@@ -52,7 +52,9 @@ void ExtrusionPath::polygons_covered_by_spacing(Polygons &out, const float scale
 {
     // Instantiating the Flow class to get the line spacing.
     // Don't know the nozzle diameter, setting to zero. It shall not matter it shall be optimized out by the compiler.
-    Flow flow(this->width, this->height, 0.f, is_bridge(this->role()));
+    bool bridge = is_bridge(this->role());
+    assert(! bridge || this->width == this->height);
+    auto flow = bridge ? Flow::bridging_flow(this->width, 0.f) : Flow(this->width, this->height, 0.f);
     polygons_append(out, offset(this->polyline, 0.5f * float(flow.scaled_spacing()) + scaled_epsilon));
 }
 
@@ -306,11 +308,7 @@ double ExtrusionLoop::min_mm3_per_mm() const
 std::string ExtrusionEntity::role_to_string(ExtrusionRole role)
 {
     switch (role) {
-#if ENABLE_GCODE_VIEWER
         case erNone                         : return L("Unknown");
-#else
-        case erNone                         : return L("None");
-#endif // ENABLE_GCODE_VIEWER
         case erPerimeter                    : return L("Perimeter");
         case erExternalPerimeter            : return L("External perimeter");
         case erOverhangPerimeter            : return L("Overhang perimeter");

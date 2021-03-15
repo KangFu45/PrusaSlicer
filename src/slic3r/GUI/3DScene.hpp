@@ -10,10 +10,7 @@
 
 #include <functional>
 
-#if ENABLE_OPENGL_ERROR_LOGGING || ! defined(NDEBUG)
-    #define HAS_GLSAFE
-#endif
-
+#define HAS_GLSAFE
 #ifdef HAS_GLSAFE
     extern void glAssertRecentCallImpl(const char *file_name, unsigned int line, const char *function_name);
     inline void glAssertRecentCall() { glAssertRecentCallImpl(__FILE__, __LINE__, __FUNCTION__); }
@@ -572,6 +569,7 @@ public:
     // returns true if all the volumes are completely contained in the print volume
     // returns the containment state in the given out_state, if non-null
     bool check_outside_state(const DynamicPrintConfig* config, ModelInstanceEPrintVolumeState* out_state);
+    bool check_outside_state(const DynamicPrintConfig* config, bool& partlyOut, bool& fullyOut);
     void reset_outside_state();
 
     void update_colors_by_extruder(const DynamicPrintConfig* config);
@@ -588,10 +586,6 @@ public:
     std::string         log_memory_info() const;
 
     bool                has_toolpaths_to_export() const;
-#if !ENABLE_GCODE_VIEWER
-    // Export the geometry of the GLVolumes toolpaths of this collection into the file with the given path, in obj format 
-    void                export_toolpaths_to_obj(const char* filename) const;
-#endif // !ENABLE_GCODE_VIEWER
 
 private:
     GLVolumeCollection(const GLVolumeCollection &other);
@@ -599,68 +593,6 @@ private:
 };
 
 GLVolumeWithIdAndZList volumes_to_render(const GLVolumePtrs& volumes, GLVolumeCollection::ERenderType type, const Transform3d& view_matrix, std::function<bool(const GLVolume&)> filter_func = nullptr);
-
-#if !ENABLE_GCODE_VIEWER
-class GLModel
-{
-protected:
-    GLVolume m_volume;
-    std::string m_filename;
-
-public:
-    GLModel();
-    virtual ~GLModel();
-
-    // init() / init_from_file() shall be called with the OpenGL context active!
-    bool init() { return on_init(); }
-    bool init_from_file(const std::string& filename) { return on_init_from_file(filename); }
-
-    void center_around(const Vec3d& center) { m_volume.set_volume_offset(center - m_volume.bounding_box().center()); }
-    void set_color(const float* color, unsigned int size);
-
-    const Vec3d& get_offset() const;
-    void set_offset(const Vec3d& offset);
-    const Vec3d& get_rotation() const;
-    void set_rotation(const Vec3d& rotation);
-    const Vec3d& get_scale() const;
-    void set_scale(const Vec3d& scale);
-
-    const std::string& get_filename() const { return m_filename; }
-    const BoundingBoxf3& get_bounding_box() const { return m_volume.bounding_box(); }
-    const BoundingBoxf3& get_transformed_bounding_box() const { return m_volume.transformed_bounding_box(); }
-
-    void reset();
-
-    void render() const; 
-
-protected:
-    virtual bool on_init() { return false; }
-    virtual bool on_init_from_file(const std::string& filename) { return false; }
-};
-
-class GLArrow : public GLModel
-{
-protected:
-    bool on_init() override;
-};
-
-class GLCurvedArrow : public GLModel
-{
-    unsigned int m_resolution;
-
-public:
-    explicit GLCurvedArrow(unsigned int resolution);
-
-protected:
-    bool on_init() override;
-};
-
-class GLBed : public GLModel
-{
-protected:
-    bool on_init_from_file(const std::string& filename) override;
-};
-#endif // !ENABLE_GCODE_VIEWER
 
 struct _3DScene
 {
@@ -676,6 +608,8 @@ struct _3DScene
     static void polyline3_to_verts(const Polyline3& polyline, double width, double height, GLVolume& volume);
     static void point3_to_verts(const Vec3crd& point, double width, double height, GLVolume& volume);
 };
+
+static constexpr float BedEpsilon = 3.f * float(EPSILON);
 
 }
 

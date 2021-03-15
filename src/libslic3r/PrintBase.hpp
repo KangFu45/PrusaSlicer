@@ -324,6 +324,20 @@ protected:
     ModelObject                  *m_model_object;
 };
 
+// Wrapper around the private PrintBase.throw_if_canceled(), so that a cancellation object could be passed
+// to a non-friend of PrintBase by a PrintBase derived object.
+class PrintTryCancel
+{
+public:
+    // calls print.throw_if_canceled().
+    void operator()();
+private:
+    friend PrintBase;
+    PrintTryCancel() = delete;
+    PrintTryCancel(const PrintBase *print) : m_print(print) {}
+    const PrintBase *m_print;
+};
+
 /**
  * @brief Printing involves slicing and export of device dependent instructions.
  *
@@ -352,7 +366,7 @@ public:
     virtual std::vector<ObjectID> print_object_ids() const = 0;
 
     // Validate the print, return empty string if valid, return error if process() cannot (or should not) be started.
-    virtual std::string     validate() const { return std::string(); }
+    virtual std::string     validate(std::string* warning = nullptr) const { return std::string(); }
 
     enum ApplyStatus {
         // No change after the Print::apply() call.
@@ -467,11 +481,13 @@ protected:
 	// Notify UI about a new warning of a milestone "step" on this PrintBase.
 	// The UI will be notified by calling a status callback.
 	// If no status callback is registered, the message is printed to console.
-	void 				   status_update_warnings(ObjectID object_id, int step, PrintStateBase::WarningLevel warning_level, const std::string &message);
+    void 				   status_update_warnings(int step, PrintStateBase::WarningLevel warning_level, const std::string &message, const PrintObjectBase* print_object = nullptr);
 
     // If the background processing stop was requested, throw CanceledException.
     // To be called by the worker thread and its sub-threads (mostly launched on the TBB thread pool) regularly.
     void                   throw_if_canceled() const { if (m_cancel_status) throw CanceledException(); }
+    // Wrapper around this->throw_if_canceled(), so that throw_if_canceled() may be passed to a function without making throw_if_canceled() public.
+    PrintTryCancel         make_try_cancel() const { return PrintTryCancel(this); }
 
     // To be called by this->output_filename() with the format string pulled from the configuration layer.
     std::string            output_filename(const std::string &format, const std::string &default_ext, const std::string &filename_base, const DynamicConfig *config_override = nullptr) const;
@@ -495,6 +511,8 @@ private:
     // The mutex will be used to guard the worker thread against entering a stage
     // while the data influencing the stage is modified.
     mutable tbb::mutex                      m_state_mutex;
+
+    friend PrintTryCancel;
 };
 
 template<typename PrintStepEnum, const size_t COUNT>
@@ -510,7 +528,7 @@ protected:
 	PrintStateBase::TimeStamp set_done(PrintStepEnum step) { 
 		std::pair<PrintStateBase::TimeStamp, bool> status = m_state.set_done(step, this->state_mutex(), [this](){ this->throw_if_canceled(); });
         if (status.second)
-            this->status_update_warnings(this->id(), static_cast<int>(step), PrintStateBase::WarningLevel::NON_CRITICAL, std::string());
+            this->status_update_warnings(static_cast<int>(step), PrintStateBase::WarningLevel::NON_CRITICAL, std::string());
         return status.first;
 	}
     bool            invalidate_step(PrintStepEnum step)
@@ -532,7 +550,7 @@ protected:
     	std::pair<PrintStepEnum, bool> active_step = m_state.active_step_add_warning(warning_level, message, message_id, this->state_mutex());
     	if (active_step.second)
     		// Update UI.
-    		this->status_update_warnings(this->id(), static_cast<int>(active_step.first), warning_level, message);
+            this->status_update_warnings(static_cast<int>(active_step.first), warning_level, message);
     }
 
 private:

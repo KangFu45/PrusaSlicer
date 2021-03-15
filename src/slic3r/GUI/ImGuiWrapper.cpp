@@ -23,7 +23,7 @@
 
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Utils.hpp"
-#include "3DScene.hpp"+
+#include "3DScene.hpp"
 #include "GUI.hpp"
 #include "I18N.hpp"
 #include "Search.hpp"
@@ -51,7 +51,9 @@ static const std::map<const char, std::string> font_icons_large = {
     {ImGui::EjectButton            , "notification_eject_sd"         },
     {ImGui::EjectHoverButton       , "notification_eject_sd_hover"   },
     {ImGui::WarningMarker          , "notification_warning"          },
-    {ImGui::ErrorMarker            , "notification_error"            }
+    {ImGui::ErrorMarker            , "notification_error"            },
+    {ImGui::CancelButton           , "notification_cancel"           },
+    {ImGui::CancelHoverButton      , "notification_cancel_hover"     },
 };
 
 const ImVec4 ImGuiWrapper::COL_GREY_DARK         = { 0.333f, 0.333f, 0.333f, 1.0f };
@@ -624,7 +626,7 @@ static bool selectable(const char* label, bool selected, ImGuiSelectableFlags fl
     }
 
     // mark a label with a ImGui::ColorMarkerHovered, if item is hovered
-    char* marked_label = new char[255];
+    char* marked_label = new char[512]; //255 symbols is not enough for translated string (e.t. to Russian)
     if (hovered)
         sprintf(marked_label, "%c%s", ImGui::ColorMarkerHovered, label);
     else
@@ -720,7 +722,7 @@ void ImGuiWrapper::search_list(const ImVec2& size_, bool (*items_getter)(int, co
         // The press on Esc key invokes editing of InputText (removes last changes)
         // So we should save previous value...
         std::string str = search_str;
-        ImGui::InputTextEx("", NULL, search_str, 20, search_size, ImGuiInputTextFlags_AutoSelectAll, NULL, NULL);
+        ImGui::InputTextEx("", NULL, search_str, 40, search_size, ImGuiInputTextFlags_AutoSelectAll, NULL, NULL);
         edited = ImGui::IsItemEdited();
         if (edited)
             hovered_id = 0;
@@ -797,6 +799,8 @@ void ImGuiWrapper::search_list(const ImVec2& size_, bool (*items_getter)(int, co
             edited = true;
         }
     };
+
+    ImGui::AlignTextToFramePadding();
 
     // add checkboxes for show/hide Categories and Groups
     text(_L("Use for search")+":");
@@ -938,7 +942,7 @@ void ImGuiWrapper::init_font(bool compress)
     config.MergeMode = true;
     if (! m_font_cjk) {
 		// Apple keyboard shortcuts are only contained in the CJK fonts.
-		ImFont *font_cjk = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/NotoSansCJK-Regular.ttc").c_str(), m_font_size, &config, ranges_keyboard_shortcuts);
+        [[maybe_unused]]ImFont *font_cjk = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/NotoSansCJK-Regular.ttc").c_str(), m_font_size, &config, ranges_keyboard_shortcuts);
         assert(font_cjk != nullptr);
     }
 #endif
@@ -961,6 +965,8 @@ void ImGuiWrapper::init_font(bool compress)
     // Fill rectangles from the SVG-icons
     for (auto icon : font_icons) {
         if (const ImFontAtlas::CustomRect* rect = io.Fonts->GetCustomRectByIndex(rect_id)) {
+            assert(rect->Width == icon_sz);
+            assert(rect->Height == icon_sz);
             std::vector<unsigned char> raw_data = load_svg(icon.second, icon_sz, icon_sz);
             const ImU32* pIn = (ImU32*)raw_data.data();
             for (int y = 0; y < icon_sz; y++) {
@@ -971,10 +977,12 @@ void ImGuiWrapper::init_font(bool compress)
         }
         rect_id++;
     }
-    icon_sz = lround(32 * font_scale); // default size of large icon is 32 px
-    
+
+    icon_sz *= 2; // default size of large icon is 32 px
     for (auto icon : font_icons_large) {
         if (const ImFontAtlas::CustomRect* rect = io.Fonts->GetCustomRectByIndex(rect_id)) {
+            assert(rect->Width == icon_sz);
+            assert(rect->Height == icon_sz);
             std::vector<unsigned char> raw_data = load_svg(icon.second, icon_sz, icon_sz);
             const ImU32* pIn = (ImU32*)raw_data.data();
             for (int y = 0; y < icon_sz; y++) {

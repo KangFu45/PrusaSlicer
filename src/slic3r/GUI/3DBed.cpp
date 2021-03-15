@@ -5,83 +5,55 @@
 #include "libslic3r/Polygon.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/BoundingBox.hpp"
-#if ENABLE_GCODE_VIEWER
 #include "libslic3r/Geometry.hpp"
-#endif // ENABLE_GCODE_VIEWER
+#include "libslic3r/Tesselate.hpp"
 
 #include "GUI_App.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "GLCanvas3D.hpp"
-#if ENABLE_GCODE_VIEWER
 #include "3DScene.hpp"
-#endif // ENABLE_GCODE_VIEWER
 
 #include <GL/glew.h>
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem/operations.hpp>
-#if ENABLE_GCODE_VIEWER
 #include <boost/log/trivial.hpp>
-#endif // ENABLE_GCODE_VIEWER
 
 static const float GROUND_Z = -0.02f;
 
 namespace Slic3r {
 namespace GUI {
 
-bool GeometryBuffer::set_from_triangles(const Polygons& triangles, float z, bool generate_tex_coords)
+bool GeometryBuffer::set_from_triangles(const std::vector<Vec2f> &triangles, float z)
 {
-    m_vertices.clear();
-    unsigned int v_size = 3 * (unsigned int)triangles.size();
-
-    if (v_size == 0)
+    if (triangles.empty()) {
+        m_vertices.clear();
         return false;
-
-    m_vertices = std::vector<Vertex>(v_size, Vertex());
-
-    float min_x = unscale<float>(triangles[0].points[0](0));
-    float min_y = unscale<float>(triangles[0].points[0](1));
-    float max_x = min_x;
-    float max_y = min_y;
-
-    unsigned int v_count = 0;
-    for (const Polygon& t : triangles) {
-        for (unsigned int i = 0; i < 3; ++i) {
-            Vertex& v = m_vertices[v_count];
-
-            const Point& p = t.points[i];
-            float x = unscale<float>(p(0));
-            float y = unscale<float>(p(1));
-
-            v.position[0] = x;
-            v.position[1] = y;
-            v.position[2] = z;
-
-            if (generate_tex_coords) {
-                v.tex_coords[0] = x;
-                v.tex_coords[1] = y;
-
-                min_x = std::min(min_x, x);
-                max_x = std::max(max_x, x);
-                min_y = std::min(min_y, y);
-                max_y = std::max(max_y, y);
-            }
-
-            ++v_count;
-        }
     }
 
-    if (generate_tex_coords) {
-        float size_x = max_x - min_x;
-        float size_y = max_y - min_y;
+    assert(triangles.size() % 3 == 0);
+    m_vertices = std::vector<Vertex>(triangles.size(), Vertex());
 
-        if ((size_x != 0.0f) && (size_y != 0.0f)) {
-            float inv_size_x = 1.0f / size_x;
-            float inv_size_y = -1.0f / size_y;
-            for (Vertex& v : m_vertices) {
-                v.tex_coords[0] = (v.tex_coords[0] - min_x) * inv_size_x;
-                v.tex_coords[1] = (v.tex_coords[1] - min_y) * inv_size_y;
-            }
+    Vec2f min = triangles.front();
+    Vec2f max = min;
+
+    for (size_t v_count = 0; v_count < triangles.size(); ++ v_count) {
+        const Vec2f &p = triangles[v_count];
+        Vertex      &v = m_vertices[v_count];
+        v.position   = Vec3f(p.x(), p.y(), z);
+        v.tex_coords = p;
+        min = min.cwiseMin(p).eval();
+        max = max.cwiseMax(p).eval();
+    }
+
+    Vec2f size = max - min;
+    if (size.x() != 0.f && size.y() != 0.f) {
+        Vec2f inv_size = size.cwiseInverse();
+        inv_size.y() *= -1;
+        for (Vertex& v : m_vertices) {
+            v.tex_coords -= min;
+            v.tex_coords.x() *= inv_size.x();
+            v.tex_coords.y() *= inv_size.y();
         }
     }
 
@@ -121,43 +93,19 @@ const float* GeometryBuffer::get_vertices_data() const
     return (m_vertices.size() > 0) ? (const float*)m_vertices.data() : nullptr;
 }
 
-#if ENABLE_GCODE_VIEWER
 const float Bed3D::Axes::DefaultStemRadius = 0.5f;
 const float Bed3D::Axes::DefaultStemLength = 25.0f;
 const float Bed3D::Axes::DefaultTipRadius = 2.5f * Bed3D::Axes::DefaultStemRadius;
 const float Bed3D::Axes::DefaultTipLength = 5.0f;
-#else
-const double Bed3D::Axes::Radius = 0.5;
-const double Bed3D::Axes::ArrowBaseRadius = 2.5 * Bed3D::Axes::Radius;
-const double Bed3D::Axes::ArrowLength = 5.0;
-#endif // ENABLE_GCODE_VIEWER
 
-#if ENABLE_GCODE_VIEWER
 void Bed3D::Axes::set_stem_length(float length)
 {
     m_stem_length = length;
     m_arrow.reset();
 }
-#else
-Bed3D::Axes::Axes()
-: origin(Vec3d::Zero())
-, length(25.0 * Vec3d::Ones())
-{
-    m_quadric = ::gluNewQuadric();
-    if (m_quadric != nullptr)
-        ::gluQuadricDrawStyle(m_quadric, GLU_FILL);
-}
-
-Bed3D::Axes::~Axes()
-{
-    if (m_quadric != nullptr)
-        ::gluDeleteQuadric(m_quadric);
-}
-#endif // ENABLE_GCODE_VIEWER
 
 void Bed3D::Axes::render() const
 {
-#if ENABLE_GCODE_VIEWER
     auto render_axis = [this](const Transform3f& transform) {
         glsafe(::glPushMatrix());
         glsafe(::glMultMatrixf(transform.data()));
@@ -193,55 +141,7 @@ void Bed3D::Axes::render() const
     shader->stop_using();
 
     glsafe(::glDisable(GL_DEPTH_TEST));
-#else
-    if (m_quadric == nullptr)
-        return;
-
-    glsafe(::glEnable(GL_DEPTH_TEST));
-    glsafe(::glEnable(GL_LIGHTING));
-
-    // x axis
-    glsafe(::glColor3fv(AXES_COLOR[0]));
-    glsafe(::glPushMatrix());
-    glsafe(::glTranslated(origin(0), origin(1), origin(2)));
-    glsafe(::glRotated(90.0, 0.0, 1.0, 0.0));
-    render_axis(length(0));
-    glsafe(::glPopMatrix());
-
-    // y axis
-    glsafe(::glColor3fv(AXES_COLOR[1]));
-    glsafe(::glPushMatrix());
-    glsafe(::glTranslated(origin(0), origin(1), origin(2)));
-    glsafe(::glRotated(-90.0, 1.0, 0.0, 0.0));
-    render_axis(length(1));
-    glsafe(::glPopMatrix());
-
-    // z axis
-    glsafe(::glColor3fv(AXES_COLOR[2]));
-    glsafe(::glPushMatrix());
-    glsafe(::glTranslated(origin(0), origin(1), origin(2)));
-    render_axis(length(2));
-    glsafe(::glPopMatrix());
-
-    glsafe(::glDisable(GL_LIGHTING));
-    glsafe(::glDisable(GL_DEPTH_TEST));
-#endif // !ENABLE_GCODE_VIEWER
 }
-
-#if !ENABLE_GCODE_VIEWER
-void Bed3D::Axes::render_axis(double length) const
-{
-    ::gluQuadricOrientation(m_quadric, GLU_OUTSIDE);
-    ::gluCylinder(m_quadric, Radius, Radius, length, 32, 1);
-    ::gluQuadricOrientation(m_quadric, GLU_INSIDE);
-    ::gluDisk(m_quadric, 0.0, Radius, 32, 1);
-    glsafe(::glTranslated(0.0, 0.0, length));
-    ::gluQuadricOrientation(m_quadric, GLU_OUTSIDE);
-    ::gluCylinder(m_quadric, ArrowBaseRadius, 0.0, ArrowLength, 32, 1);
-    ::gluQuadricOrientation(m_quadric, GLU_INSIDE);
-    ::gluDisk(m_quadric, 0.0, ArrowBaseRadius, 32, 1);
-}
-#endif // !ENABLE_GCODE_VIEWER
 
 Bed3D::Bed3D()
     : m_type(Custom)
@@ -308,13 +208,8 @@ bool Bed3D::set_shape(const Pointfs& shape, const std::string& custom_texture, c
     m_model.reset();
 
     // Set the origin and size for rendering the coordinate system axes.
-#if ENABLE_GCODE_VIEWER
     m_axes.set_origin({ 0.0, 0.0, static_cast<double>(GROUND_Z) });
     m_axes.set_stem_length(0.1f * static_cast<float>(m_bounding_box.max_size()));
-#else
-    m_axes.origin = Vec3d(0.0, 0.0, (double)GROUND_Z);
-    m_axes.length = 0.1 * m_bounding_box.max_size() * Vec3d::Ones();
-#endif // ENABLE_GCODE_VIEWER
 
     // Let the calee to update the UI.
     return true;
@@ -360,7 +255,6 @@ void Bed3D::calc_bounding_boxes() const
     m_extended_bounding_box = m_bounding_box;
 
     // extend to contain axes
-#if ENABLE_GCODE_VIEWER
     m_extended_bounding_box.merge(m_axes.get_origin() + m_axes.get_total_length() * Vec3d::Ones());
     m_extended_bounding_box.merge(m_extended_bounding_box.min + Vec3d(-Axes::DefaultTipRadius, -Axes::DefaultTipRadius, m_extended_bounding_box.max(2)));
 
@@ -370,21 +264,12 @@ void Bed3D::calc_bounding_boxes() const
         model_bb.translate(m_model_offset);
         m_extended_bounding_box.merge(model_bb);
     }
-#else
-    m_extended_bounding_box.merge(m_axes.length + Axes::ArrowLength * Vec3d::Ones());
-    // extend to contain model, if any
-    if (!m_model.get_filename().empty())
-        m_extended_bounding_box.merge(m_model.get_transformed_bounding_box());
-#endif // ENABLE_GCODE_VIEWER
 }
 
 void Bed3D::calc_triangles(const ExPolygon& poly)
 {
-    Polygons triangles;
-    poly.triangulate_p2t(&triangles);
-
-    if (!m_triangles.set_from_triangles(triangles, GROUND_Z, true))
-        printf("Unable to create bed triangles\n");
+    if (! m_triangles.set_from_triangles(triangulate_expolygon_2f(poly, NORMALS_UP), GROUND_Z))
+        BOOST_LOG_TRIVIAL(error) << "Unable to create bed triangles";
 }
 
 void Bed3D::calc_gridlines(const ExPolygon& poly, const BoundingBox& bed_bbox)
@@ -411,28 +296,9 @@ void Bed3D::calc_gridlines(const ExPolygon& poly, const BoundingBox& bed_bbox)
     std::copy(contour_lines.begin(), contour_lines.end(), std::back_inserter(gridlines));
 
     if (!m_gridlines.set_from_lines(gridlines, GROUND_Z))
-        printf("Unable to create bed grid lines\n");
+        BOOST_LOG_TRIVIAL(error) << "Unable to create bed grid lines\n";
 }
 
-#if !ENABLE_GCODE_VIEWER
-static std::string system_print_bed_model(const Preset &preset)
-{
-	std::string out;
-	const VendorProfile::PrinterModel *pm = PresetUtils::system_printer_model(preset);
-	if (pm != nullptr && ! pm->bed_model.empty())
-		out = Slic3r::resources_dir() + "/profiles/" + preset.vendor->id + "/" + pm->bed_model;
-	return out;
-}
-
-static std::string system_print_bed_texture(const Preset &preset)
-{
-	std::string out;
-	const VendorProfile::PrinterModel *pm = PresetUtils::system_printer_model(preset);
-	if (pm != nullptr && ! pm->bed_texture.empty())
-		out = Slic3r::resources_dir() + "/profiles/" + preset.vendor->id + "/" + pm->bed_texture;
-	return out;
-}
-#endif // !ENABLE_GCODE_VIEWER
 
 std::tuple<Bed3D::EType, std::string, std::string> Bed3D::detect_type(const Pointfs& shape) const
 {
@@ -442,13 +308,8 @@ std::tuple<Bed3D::EType, std::string, std::string> Bed3D::detect_type(const Poin
         while (curr != nullptr) {
             if (curr->config.has("bed_shape")) {
                 if (shape == dynamic_cast<const ConfigOptionPoints*>(curr->config.option("bed_shape"))->values) {
-#if ENABLE_GCODE_VIEWER
                     std::string model_filename = PresetUtils::system_printer_bed_model(*curr);
                     std::string texture_filename = PresetUtils::system_printer_bed_texture(*curr);
-#else
-                    std::string model_filename = system_print_bed_model(*curr);
-                    std::string texture_filename = system_print_bed_texture(*curr);
-#endif // ENABLE_GCODE_VIEWER
                     if (!model_filename.empty() && !texture_filename.empty())
                         return { System, model_filename, texture_filename };
                 }
@@ -614,11 +475,7 @@ void Bed3D::render_model() const
         // move the model so that its origin (0.0, 0.0, 0.0) goes into the bed shape center and a bit down to avoid z-fighting with the texture quad
         Vec3d shift = m_bounding_box.center();
         shift(2) = -0.03;
-#if ENABLE_GCODE_VIEWER
         m_model_offset = shift;
-#else
-        m_model.set_offset(shift);
-#endif // ENABLE_GCODE_VIEWER
 
         // update extended bounding box
         calc_bounding_boxes();
@@ -628,15 +485,11 @@ void Bed3D::render_model() const
         GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
         if (shader != nullptr) {
             shader->start_using();
-#if ENABLE_GCODE_VIEWER
             shader->set_uniform("uniform_color", m_model_color);
             ::glPushMatrix();
             ::glTranslated(m_model_offset(0), m_model_offset(1), m_model_offset(2));
-#endif // ENABLE_GCODE_VIEWER
             m_model.render();
-#if ENABLE_GCODE_VIEWER
             ::glPopMatrix();
-#endif // ENABLE_GCODE_VIEWER
             shader->stop_using();
         }
     }
@@ -673,11 +526,7 @@ void Bed3D::render_default(bool bottom) const
         if (!has_model && !bottom) {
             // draw background
             glsafe(::glDepthMask(GL_FALSE));
-#if ENABLE_GCODE_VIEWER
             glsafe(::glColor4fv(m_model_color.data()));
-#else
-            glsafe(::glColor4f(0.35f, 0.35f, 0.35f, 0.4f));
-#endif // ENABLE_GCODE_VIEWER
             glsafe(::glNormal3d(0.0f, 0.0f, 1.0f));
             glsafe(::glVertexPointer(3, GL_FLOAT, m_triangles.get_vertex_data_size(), (GLvoid*)m_triangles.get_vertices_data()));
             glsafe(::glDrawArrays(GL_TRIANGLES, 0, (GLsizei)triangles_vcount));

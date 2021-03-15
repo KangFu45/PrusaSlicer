@@ -11,7 +11,6 @@
 #include "Slicing.hpp"
 #include "Tesselate.hpp"
 #include "Utils.hpp"
-#include "AABBTreeIndirect.hpp"
 #include "Fill/FillAdaptive.hpp"
 #include "Format/STL.hpp"
 
@@ -98,6 +97,7 @@ PrintBase::ApplyStatus PrintObject::set_instances(PrintInstances &&instances)
     return status;
 }
 
+// Called by make_perimeters()
 // 1) Decides Z positions of the layers,
 // 2) Initializes layers and their regions
 // 3) Slices the object meshes
@@ -105,8 +105,6 @@ PrintBase::ApplyStatus PrintObject::set_instances(PrintInstances &&instances)
 // 5) Applies size compensation (offsets the slices in XY plane)
 // 6) Replaces bad slices by the slices reconstructed from the upper/lower layer
 // Resulting expolygons of layer regions are marked as Internal.
-//
-// this should be idempotent
 void PrintObject::slice()
 {
     if (! this->set_started(posSlice))
@@ -126,7 +124,7 @@ void PrintObject::slice()
     // Simplify slices if required.
     if (m_print->config().resolution)
         this->simplify_slices(scale_(this->print()->config().resolution));
-    // Update bounding boxes
+    // Update bounding boxes, back up raw slices of complex models.
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, m_layers.size()),
         [this](const tbb::blocked_range<size_t>& range) {
@@ -137,6 +135,7 @@ void PrintObject::slice()
                 layer.lslices_bboxes.reserve(layer.lslices.size());
                 for (const ExPolygon &expoly : layer.lslices)
                 	layer.lslices_bboxes.emplace_back(get_extents(expoly));
+                layer.backup_untyped_slices();
             }
         });
     if (m_layers.empty())
@@ -158,10 +157,10 @@ void PrintObject::make_perimeters()
     m_print->set_status(20, L("Generating perimeters"));
     BOOST_LOG_TRIVIAL(info) << "Generating perimeters..." << log_memory_info();
     
-    // merge slices if they were split into types
+    // Revert the typed slices into untyped slices.
     if (m_typed_slices) {
         for (Layer *layer : m_layers) {
-            layer->merge_slices();
+            layer->restore_untyped_slices();
             m_print->throw_if_canceled();
         }
         m_typed_slices = false;
@@ -400,7 +399,8 @@ void PrintObject::ironing()
     if (this->set_started(posIroning)) {
         BOOST_LOG_TRIVIAL(debug) << "Ironing in parallel - start";
         tbb::parallel_for(
-            tbb::blocked_range<size_t>(1, m_layers.size()),
+            // Ironing starting with layer 0 to support ironing all surfaces.
+            tbb::blocked_range<size_t>(0, m_layers.size()),
             [this](const tbb::blocked_range<size_t>& range) {
                 for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
                     m_print->throw_if_canceled();
@@ -418,7 +418,7 @@ void PrintObject::generate_support_material()
 {
     if (this->set_started(posSupportMaterial)) {
         this->clear_support_layers();
-        if ((m_config.support_material || m_config.raft_layers > 0) && m_layers.size() > 1) {
+        if ((this->has_support() && m_layers.size() > 1) || (this->has_raft() && ! m_layers.empty())) {
             m_print->set_status(85, L("Generating support material"));    
             this->_generate_support_material();
             m_print->throw_if_canceled();
@@ -430,6 +430,24 @@ void PrintObject::generate_support_material()
                 if (layer->empty())
                     throw Slic3r::SlicingError("Levitating objects cannot be printed without supports.");
 #endif
+
+            // Do we have custom support data that would not be used?
+            // Notify the user in that case.
+            if (! this->has_support()) {
+                for (const ModelVolume* mv : this->model_object()->volumes) {
+                    bool has_enforcers = mv->is_support_enforcer()
+                        || (mv->is_model_part()
+                            && ! mv->supported_facets.empty()
+                            && ! mv->supported_facets.get_facets(*mv, EnforcerBlockerType::ENFORCER).indices.empty());
+                    if (has_enforcers) {
+                        this->active_step_add_warning(PrintStateBase::WarningLevel::CRITICAL,
+                            L("An object has custom support enforcers which will not be used "
+                              "because supports are off. Consider turning them on.") + "\n" +
+                            (L("Object name")) + ": " + this->model_object()->name);
+                        break;
+                    }
+                }
+            }
         }
         this->set_done(posSupportMaterial);
     }
@@ -502,14 +520,15 @@ SupportLayer* PrintObject::add_support_layer(int id, coordf_t height, coordf_t p
     return m_support_layers.back();
 }
 
-SupportLayerPtrs::const_iterator PrintObject::insert_support_layer(SupportLayerPtrs::const_iterator pos, size_t id, coordf_t height, coordf_t print_z, coordf_t slice_z)
+SupportLayerPtrs::iterator PrintObject::insert_support_layer(SupportLayerPtrs::iterator pos, size_t id, coordf_t height, coordf_t print_z, coordf_t slice_z)
 {
     return m_support_layers.insert(pos, new SupportLayer(id, this, height, print_z, slice_z));
 }
 
 // Called by Print::apply().
 // This method only accepts PrintObjectConfig and PrintRegionConfig option keys.
-bool PrintObject::invalidate_state_by_config_options(const std::vector<t_config_option_key> &opt_keys)
+bool PrintObject::invalidate_state_by_config_options(
+    const ConfigOptionResolver &old_config, const ConfigOptionResolver &new_config, const std::vector<t_config_option_key> &opt_keys)
 {
     if (opt_keys.empty())
         return false;
@@ -517,20 +536,26 @@ bool PrintObject::invalidate_state_by_config_options(const std::vector<t_config_
     std::vector<PrintObjectStep> steps;
     bool invalidated = false;
     for (const t_config_option_key &opt_key : opt_keys) {
-        if (   opt_key == "perimeters"
+        if (   opt_key == "brim_width"
+            || opt_key == "brim_offset"
+            || opt_key == "brim_type") {
+            // Brim is printed below supports, support invalidates brim and skirt.
+            steps.emplace_back(posSupportMaterial);
+        } else if (
+               opt_key == "perimeters"
             || opt_key == "extra_perimeters"
+            || opt_key == "gap_fill_enabled"
             || opt_key == "gap_fill_speed"
-            || opt_key == "overhangs"
             || opt_key == "first_layer_extrusion_width"
             || opt_key == "perimeter_extrusion_width"
             || opt_key == "infill_overlap"
-            || opt_key == "thin_walls"
             || opt_key == "external_perimeters_first") {
             steps.emplace_back(posPerimeters);
         } else if (
                opt_key == "layer_height"
             || opt_key == "first_layer_height"
             || opt_key == "raft_layers"
+            || opt_key == "raft_contact_distance"
             || opt_key == "slice_closing_radius") {
             steps.emplace_back(posSlice);
 		} else if (
@@ -555,7 +580,10 @@ bool PrintObject::invalidate_state_by_config_options(const std::vector<t_config_
             || opt_key == "support_material_enforce_layers"
             || opt_key == "support_material_extruder"
             || opt_key == "support_material_extrusion_width"
+            || opt_key == "support_material_bottom_contact_distance"
             || opt_key == "support_material_interface_layers"
+            || opt_key == "support_material_bottom_interface_layers"
+            || opt_key == "support_material_interface_pattern"
             || opt_key == "support_material_interface_contact_loops"
             || opt_key == "support_material_interface_extruder"
             || opt_key == "support_material_interface_spacing"
@@ -565,15 +593,24 @@ bool PrintObject::invalidate_state_by_config_options(const std::vector<t_config_
             || opt_key == "support_material_synchronize_layers"
             || opt_key == "support_material_threshold"
             || opt_key == "support_material_with_sheath"
+            || opt_key == "raft_expansion"
+            || opt_key == "raft_first_layer_density"
+            || opt_key == "raft_first_layer_expansion"
             || opt_key == "dont_support_bridges"
             || opt_key == "first_layer_extrusion_width") {
             steps.emplace_back(posSupportMaterial);
+        } else if (opt_key == "bottom_solid_layers") {
+            steps.emplace_back(posPrepareInfill);
+            if (m_print->config().spiral_vase) {
+                // Changing the number of bottom layers when a spiral vase is enabled requires re-slicing the object again.
+                // Otherwise, holes in the bottom layers could be filled, as is reported in GH #5528.
+                steps.emplace_back(posSlice);
+            }
         } else if (
                opt_key == "interface_shells"
             || opt_key == "infill_only_where_needed"
             || opt_key == "infill_every_layers"
             || opt_key == "solid_infill_every_layers"
-            || opt_key == "bottom_solid_layers"
             || opt_key == "bottom_solid_min_thickness"
             || opt_key == "top_solid_layers"
             || opt_key == "top_solid_min_thickness"
@@ -590,18 +627,35 @@ bool PrintObject::invalidate_state_by_config_options(const std::vector<t_config_
             || opt_key == "external_fill_link_max_length"
             || opt_key == "fill_angle"
             || opt_key == "fill_pattern"
-            || opt_key == "fill_link_max_length"
+            || opt_key == "infill_anchor"
+            || opt_key == "infill_anchor_max"
             || opt_key == "top_infill_extrusion_width"
             || opt_key == "first_layer_extrusion_width") {
             steps.emplace_back(posInfill);
-        } else if (
-               opt_key == "fill_density"
-            || opt_key == "solid_infill_extrusion_width") {
+        } else if (opt_key == "fill_density") {
+            // One likely wants to reslice only when switching between zero infill to simulate boolean difference (subtracting volumes),
+            // normal infill and 100% (solid) infill.
+            const auto *old_density = old_config.option<ConfigOptionPercent>(opt_key);
+            const auto *new_density = new_config.option<ConfigOptionPercent>(opt_key);
+            assert(old_density && new_density);
+            //FIXME Vojtech is not quite sure about the 100% here, maybe it is not needed.
+            if (is_approx(old_density->value, 0.) || is_approx(old_density->value, 100.) ||
+                is_approx(new_density->value, 0.) || is_approx(new_density->value, 100.))
+                steps.emplace_back(posPerimeters);
+            steps.emplace_back(posPrepareInfill);
+        } else if (opt_key == "solid_infill_extrusion_width") {
+            // This value is used for calculating perimeter - infill overlap, thus perimeters need to be recalculated.
             steps.emplace_back(posPerimeters);
             steps.emplace_back(posPrepareInfill);
         } else if (
                opt_key == "external_perimeter_extrusion_width"
-            || opt_key == "perimeter_extruder") {
+            || opt_key == "perimeter_extruder"
+            || opt_key == "fuzzy_skin"
+            || opt_key == "fuzzy_skin_thickness"
+            || opt_key == "fuzzy_skin_point_dist"
+            || opt_key == "overhangs"
+            || opt_key == "thin_walls"
+            || opt_key == "thick_bridges") {
             steps.emplace_back(posPerimeters);
             steps.emplace_back(posSupportMaterial);
         } else if (opt_key == "bridge_flow_ratio") {
@@ -655,6 +709,7 @@ bool PrintObject::invalidate_step(PrintObjectStep step)
     } else if (step == posPrepareInfill) {
         invalidated |= this->invalidate_steps({ posInfill, posIroning });
     } else if (step == posInfill) {
+        invalidated |= this->invalidate_steps({ posIroning });
         invalidated |= m_print->invalidate_steps({ psSkirt, psBrim });
     } else if (step == posSlice) {
 		invalidated |= this->invalidate_steps({ posPerimeters, posPrepareInfill, posInfill, posIroning, posSupportMaterial });
@@ -682,13 +737,6 @@ bool PrintObject::invalidate_all_steps()
 	this->m_slicing_params.valid = false;
 	this->region_volumes.clear();
 	return result;
-}
-
-bool PrintObject::has_support_material() const
-{
-    return m_config.support_material
-        || m_config.raft_layers > 0
-        || m_config.support_material_enforce_layers > 0;
 }
 
 static const PrintRegion* first_printing_region(const PrintObject &print_object)
@@ -719,7 +767,7 @@ void PrintObject::detect_surfaces_type()
     // should be visible.
     bool spiral_vase      = this->print()->config().spiral_vase.value;
     bool interface_shells = ! spiral_vase && m_config.interface_shells.value;
-    size_t num_layers     = spiral_vase ? first_printing_region(*this)->config().bottom_solid_layers : m_layers.size();
+    size_t num_layers     = spiral_vase ? std::min(size_t(first_printing_region(*this)->config().bottom_solid_layers), m_layers.size()) : m_layers.size();
 
     for (size_t idx_region = 0; idx_region < this->region_volumes.size(); ++ idx_region) {
         BOOST_LOG_TRIVIAL(debug) << "Detecting solid surfaces for region " << idx_region << " in parallel - start";
@@ -742,14 +790,10 @@ void PrintObject::detect_surfaces_type()
             		// In non-spiral vase mode, go over all layers.
             		m_layers.size()),
             [this, idx_region, interface_shells, &surfaces_new](const tbb::blocked_range<size_t>& range) {
-                // If we have raft layers, consider bottom layer as a bridge just like any other bottom surface lying on the void.
-                SurfaceType surface_type_bottom_1st =
-                    (m_config.raft_layers.value > 0 && m_config.support_material_contact_distance.value > 0) ?
-                    stBottomBridge : stBottom;
                 // If we have soluble support material, don't bridge. The overhang will be squished against a soluble layer separating
                 // the support from the print.
                 SurfaceType surface_type_bottom_other =
-                    (m_config.support_material.value && m_config.support_material_contact_distance.value == 0) ?
+                    (this->has_support() && m_config.support_material_contact_distance.value == 0) ?
                     stBottom : stBottomBridge;
                 for (size_t idx_layer = range.begin(); idx_layer < range.end(); ++ idx_layer) {
                     m_print->throw_if_canceled();
@@ -824,7 +868,7 @@ void PrintObject::detect_surfaces_type()
                         // we clone surfaces because we're going to clear the slices collection
                         bottom = layerm->slices.surfaces;
                         for (Surface &surface : bottom)
-                            surface.surface_type = surface_type_bottom_1st;
+                            surface.surface_type = stBottom;
                     }
                     
                     // now, if the object contained a thin membrane, we could have overlapping bottom
@@ -897,7 +941,7 @@ void PrintObject::detect_surfaces_type()
         // Fill in layerm->fill_surfaces by trimming the layerm->slices by the cummulative layerm->fill_surfaces.
         tbb::parallel_for(
             tbb::blocked_range<size_t>(0, m_layers.size()),
-            [this, idx_region, interface_shells](const tbb::blocked_range<size_t>& range) {
+            [this, idx_region](const tbb::blocked_range<size_t>& range) {
                 for (size_t idx_layer = range.begin(); idx_layer < range.end(); ++ idx_layer) {
                     m_print->throw_if_canceled();
                     LayerRegion *layerm = m_layers[idx_layer]->m_regions[idx_region];
@@ -1007,7 +1051,7 @@ void PrintObject::discover_vertical_shells()
         Polygons    holes;
     };
     bool     spiral_vase      = this->print()->config().spiral_vase.value;
-    size_t   num_layers       = spiral_vase ? first_printing_region(*this)->config().bottom_solid_layers : m_layers.size();
+    size_t   num_layers       = spiral_vase ? std::min(size_t(first_printing_region(*this)->config().bottom_solid_layers), m_layers.size()) : m_layers.size();
     coordf_t min_layer_height = this->slicing_parameters().min_layer_height;
     // Does this region possibly produce more than 1 top or bottom layer?
     auto has_extra_layers_fn = [min_layer_height](const PrintRegionConfig &config) {
@@ -1415,26 +1459,18 @@ void PrintObject::bridge_over_infill()
         const PrintRegion &region = *m_print->regions()[region_id];
         
         // skip bridging in case there are no voids
-        if (region.config().fill_density.value == 100) continue;
-        
-        // get bridge flow
-        Flow bridge_flow = region.flow(
-            frSolidInfill,
-            -1,     // layer height, not relevant for bridge flow
-            true,   // bridge
-            false,  // first layer
-            -1,     // custom width, not relevant for bridge flow
-            *this
-        );
-        
+        if (region.config().fill_density.value == 100)
+            continue;
+
 		for (LayerPtrs::iterator layer_it = m_layers.begin(); layer_it != m_layers.end(); ++ layer_it) {
             // skip first layer
 			if (layer_it == m_layers.begin())
                 continue;
             
-            Layer* layer        = *layer_it;
-            LayerRegion* layerm = layer->m_regions[region_id];
-            
+            Layer       *layer       = *layer_it;
+            LayerRegion *layerm      = layer->m_regions[region_id];
+            Flow         bridge_flow = layerm->bridging_flow(frSolidInfill);
+
             // extract the stInternalSolid surfaces that might be transformed into bridges
             Polygons internal_solid;
             layerm->fill_surfaces.filter_by_type(stInternalSolid, &internal_solid);
@@ -1447,7 +1483,7 @@ void PrintObject::bridge_over_infill()
                 Polygons to_bridge_pp = internal_solid;
                 
                 // iterate through lower layers spanned by bridge_flow
-                double bottom_z = layer->print_z - bridge_flow.height;
+                double bottom_z = layer->print_z - bridge_flow.height();
                 for (int i = int(layer_it - m_layers.begin()) - 1; i >= 0; --i) {
                     const Layer* lower_layer = m_layers[i];
                     
@@ -1590,6 +1626,12 @@ PrintRegionConfig PrintObject::region_config_from_model_volume(const PrintRegion
     clamp_exturder_to_default(config.infill_extruder,       num_extruders);
     clamp_exturder_to_default(config.perimeter_extruder,    num_extruders);
     clamp_exturder_to_default(config.solid_infill_extruder, num_extruders);
+    if (config.fill_density.value < 0.00011f)
+        // Switch of infill for very low infill rates, also avoid division by zero in infill generator for these very low rates.
+        // See GH issue #5910.
+        config.fill_density.value = 0;
+    else 
+        config.fill_density.value = std::min(config.fill_density.value, 100.);
     return config;
 }
 
@@ -1617,6 +1659,7 @@ SlicingParameters PrintObject::slicing_parameters(const DynamicPrintConfig& full
 			PrintRegion::collect_object_printing_extruders(
 				print_config,
 				region_config_from_model_volume(default_region_config, nullptr, *model_volume, num_extruders),
+                object_config.brim_type != btNoBrim && object_config.brim_width > 0.,
 				object_extruders);
 			for (const std::pair<const t_layer_height_range, ModelConfig> &range_and_config : model_object.layer_config_ranges)
 				if (range_and_config.second.has("perimeter_extruder") ||
@@ -1625,6 +1668,7 @@ SlicingParameters PrintObject::slicing_parameters(const DynamicPrintConfig& full
 					PrintRegion::collect_object_printing_extruders(
 						print_config,
 						region_config_from_model_volume(default_region_config, &range_and_config.second.get(), *model_volume, num_extruders),
+                        object_config.brim_type != btNoBrim && object_config.brim_width > 0.,
 						object_extruders);
 		}
     sort_remove_duplicates(object_extruders);
@@ -1710,7 +1754,7 @@ void PrintObject::_slice(const std::vector<coordf_t> &layer_height_profile)
             }
             // Make sure all layers contain layer region objects for all regions.
             for (size_t region_id = 0; region_id < this->region_volumes.size(); ++ region_id)
-                layer->add_region(this->print()->regions()[region_id]);
+                layer->add_region(this->print()->get_region(region_id));
             prev = layer;
         }
     }
@@ -1747,14 +1791,24 @@ void PrintObject::_slice(const std::vector<coordf_t> &layer_height_profile)
     // Slice all non-modifier volumes.
     bool clipped  = false;
     bool upscaled = false;
-    auto slicing_mode = this->print()->config().spiral_vase ? SlicingMode::PositiveLargestContour : SlicingMode::Regular;
+    bool spiral_vase  = this->print()->config().spiral_vase;
+    auto slicing_mode = spiral_vase ? SlicingMode::PositiveLargestContour : SlicingMode::Regular;
     if (! has_z_ranges && (! m_config.clip_multipart_objects.value || all_volumes_single_region >= 0)) {
         // Cheap path: Slice regions without mutual clipping.
         // The cheap path is possible if no clipping is allowed or if slicing volumes of just a single region.
         for (size_t region_id = 0; region_id < this->region_volumes.size(); ++ region_id) {
             BOOST_LOG_TRIVIAL(debug) << "Slicing objects - region " << region_id;
             // slicing in parallel
-            std::vector<ExPolygons> expolygons_by_layer = this->slice_region(region_id, slice_zs, slicing_mode);
+            size_t slicing_mode_normal_below_layer = 0;
+            if (spiral_vase) {
+                // Slice the bottom layers with SlicingMode::Regular.
+                // This needs to be in sync with LayerRegion::make_perimeters() spiral_vase!
+                const PrintRegionConfig &config = this->print()->regions()[region_id]->config();
+                slicing_mode_normal_below_layer = size_t(config.bottom_solid_layers.value);
+                for (; slicing_mode_normal_below_layer < slice_zs.size() && slice_zs[slicing_mode_normal_below_layer] < config.bottom_solid_min_thickness - EPSILON;
+                    ++ slicing_mode_normal_below_layer);
+            }
+            std::vector<ExPolygons> expolygons_by_layer = this->slice_region(region_id, slice_zs, slicing_mode, slicing_mode_normal_below_layer, SlicingMode::Regular);
             m_print->throw_if_canceled();
             BOOST_LOG_TRIVIAL(debug) << "Slicing objects - append slices " << region_id << " start";
             for (size_t layer_id = 0; layer_id < expolygons_by_layer.size(); ++ layer_id)
@@ -1903,7 +1957,7 @@ end:
     BOOST_LOG_TRIVIAL(debug) << "Slicing objects - make_slices in parallel - begin";
     {
         // Compensation value, scaled.
-        const float xy_compensation_scaled 	 			= float(scale_(m_config.xy_size_compensation.value));
+        const float xy_compensation_scaled              = float(scale_(m_config.xy_size_compensation.value));
         const float elephant_foot_compensation_scaled 	= (m_config.raft_layers == 0) ? 
         	// Only enable Elephant foot compensation if printing directly on the print bed.
             float(scale_(m_config.elefant_foot_compensation.value)) :
@@ -1987,10 +2041,9 @@ end:
 	                layer->make_slices();
 	            }
 	        });
-	    if (elephant_foot_compensation_scaled > 0.f) {
+	    if (elephant_foot_compensation_scaled > 0.f && ! m_layers.empty()) {
 	    	// The Elephant foot has been compensated, therefore the 1st layer's lslices are shrank with the Elephant foot compensation value.
 	    	// Store the uncompensated value there.
-	    	assert(! m_layers.empty());
 	    	assert(m_layers.front()->id() == 0);
 			m_layers.front()->lslices = std::move(lslices_1st_layer);
 		}
@@ -2001,7 +2054,7 @@ end:
 }
 
 // To be used only if there are no layer span specific configurations applied, which would lead to z ranges being generated for this region.
-std::vector<ExPolygons> PrintObject::slice_region(size_t region_id, const std::vector<float> &z, SlicingMode mode) const
+std::vector<ExPolygons> PrintObject::slice_region(size_t region_id, const std::vector<float> &z, SlicingMode mode, size_t slicing_mode_normal_below_layer, SlicingMode mode_below) const
 {
 	std::vector<const ModelVolume*> volumes;
     if (region_id < this->region_volumes.size()) {
@@ -2011,10 +2064,10 @@ std::vector<ExPolygons> PrintObject::slice_region(size_t region_id, const std::v
 				volumes.emplace_back(volume);
 		}
     }
-	return this->slice_volumes(z, mode, volumes);
+	return this->slice_volumes(z, mode, slicing_mode_normal_below_layer, mode_below, volumes);
 }
 
-// Z ranges are not applicable to modifier meshes, therefore a sinle volume will be found in volume_and_range at most once.
+// Z ranges are not applicable to modifier meshes, therefore a single volume will be found in volume_and_range at most once.
 std::vector<ExPolygons> PrintObject::slice_modifiers(size_t region_id, const std::vector<float> &slice_zs) const
 {
 	std::vector<ExPolygons> out;
@@ -2080,10 +2133,12 @@ std::vector<ExPolygons> PrintObject::slice_modifiers(size_t region_id, const std
 								ranges.emplace_back(volumes_and_ranges[j].first);
 			                // slicing in parallel
 			                std::vector<ExPolygons> this_slices = this->slice_volume(slice_zs, ranges, SlicingMode::Regular, *model_volume);
+                            // Variable this_slices could be empty if no value of slice_zs is within any of the ranges of this volume.
 			                if (out.empty()) {
 			                	out = std::move(this_slices);
 			                	merge.assign(out.size(), false);
-			                } else {
+			                } else if (!this_slices.empty()) {
+                                assert(out.size() == this_slices.size());
 			                	for (size_t i = 0; i < out.size(); ++ i)
                                     if (! this_slices[i].empty()) {
 			                			if (! out[i].empty()) {
@@ -2121,7 +2176,20 @@ std::vector<ExPolygons> PrintObject::slice_support_volumes(const ModelVolumeType
     return this->slice_volumes(zs, SlicingMode::Regular, volumes);
 }
 
-std::vector<ExPolygons> PrintObject::slice_volumes(const std::vector<float> &z, SlicingMode mode, const std::vector<const ModelVolume*> &volumes) const
+//FIXME The admesh repair function may break the face connectivity, rather refresh it here as the slicing code relies on it.
+static void fix_mesh_connectivity(TriangleMesh &mesh)
+{
+    auto nr_degenerated = mesh.stl.stats.degenerate_facets;
+    stl_check_facets_exact(&mesh.stl);
+    if (nr_degenerated != mesh.stl.stats.degenerate_facets)
+        // stl_check_facets_exact() removed some newly degenerated faces. Some faces could become degenerate after some mesh transformation.
+        stl_generate_shared_vertices(&mesh.stl, mesh.its);
+}
+
+std::vector<ExPolygons> PrintObject::slice_volumes(
+    const std::vector<float> &z, 
+    SlicingMode mode, size_t slicing_mode_normal_below_layer, SlicingMode mode_below, 
+    const std::vector<const ModelVolume*> &volumes) const
 {
     std::vector<ExPolygons> layers;
     if (! volumes.empty()) {
@@ -2130,10 +2198,8 @@ std::vector<ExPolygons> PrintObject::slice_volumes(const std::vector<float> &z, 
 		TriangleMesh mesh(volumes.front()->mesh());
         mesh.transform(volumes.front()->get_matrix(), true);
 		assert(mesh.repaired);
-		if (volumes.size() == 1 && mesh.repaired) {
-			//FIXME The admesh repair function may break the face connectivity, rather refresh it here as the slicing code relies on it.
-			stl_check_facets_exact(&mesh.stl);
-		}
+		if (volumes.size() == 1 && mesh.repaired)
+            fix_mesh_connectivity(mesh);
         for (size_t idx_volume = 1; idx_volume < volumes.size(); ++ idx_volume) {
             const ModelVolume &model_volume = *volumes[idx_volume];
             TriangleMesh vol_mesh(model_volume.mesh());
@@ -2151,7 +2217,7 @@ std::vector<ExPolygons> PrintObject::slice_volumes(const std::vector<float> &z, 
             mesh.require_shared_vertices();
             TriangleMeshSlicer mslicer;
             mslicer.init(&mesh, callback);
-			mslicer.slice(z, mode, float(m_config.slice_closing_radius.value), &layers, callback);
+			mslicer.slice(z, mode, slicing_mode_normal_below_layer, mode_below, float(m_config.slice_closing_radius.value), &layers, callback);
             m_print->throw_if_canceled();
         }
     }
@@ -2166,10 +2232,8 @@ std::vector<ExPolygons> PrintObject::slice_volume(const std::vector<float> &z, S
 	    //FIXME better to split the mesh into separate shells, perform slicing over each shell separately and then to use a Boolean operation to merge them.
 	    TriangleMesh mesh(volume.mesh());
 	    mesh.transform(volume.get_matrix(), true);
-		if (mesh.repaired) {
-			//FIXME The admesh repair function may break the face connectivity, rather refresh it here as the slicing code relies on it.
-			stl_check_facets_exact(&mesh.stl);
-		}
+		if (mesh.repaired)
+            fix_mesh_connectivity(mesh);
 	    if (mesh.stl.stats.number_of_facets > 0) {
 	        mesh.transform(m_trafo, true);
 	        // apply XY shift
@@ -2188,7 +2252,7 @@ std::vector<ExPolygons> PrintObject::slice_volume(const std::vector<float> &z, S
     return layers;
 }
 
-// Filter the zs not inside the ranges. The ranges are closed at the botton and open at the top, they are sorted lexicographically and non overlapping.
+// Filter the zs not inside the ranges. The ranges are closed at the bottom and open at the top, they are sorted lexicographically and non overlapping.
 std::vector<ExPolygons> PrintObject::slice_volume(const std::vector<float> &z, const std::vector<t_layer_height_range> &ranges, SlicingMode mode, const ModelVolume &volume) const
 {
 	std::vector<ExPolygons> out;
@@ -2750,8 +2814,9 @@ void PrintObject::project_and_append_custom_facets(
         const Transform3f& tr1 = mv->get_matrix().cast<float>();
         const Transform3f& tr2 = this->trafo().cast<float>();
         const Transform3f  tr  = tr2 * tr1;
-        const float tr_det_sign = (tr.matrix().determinant() > 0. ? 1.f : -1.f);
-
+        const float        tr_det_sign = (tr.matrix().determinant() > 0. ? 1.f : -1.f);
+        const Vec2f        center = unscaled<float>(this->center_offset());
+        ConstLayerPtrsAdaptor layers = this->layers();
 
         // The projection will be at most a pentagon. Let's minimize heap
         // reallocations by saving in in the following struct.
@@ -2759,10 +2824,17 @@ void PrintObject::project_and_append_custom_facets(
         // and they can be moved from to create an ExPolygon later.
         struct LightPolygon {
             LightPolygon() { pts.reserve(5); }
+            LightPolygon(const std::array<Vec2f, 3>& tri) {
+                pts.reserve(3);
+                pts.emplace_back(scaled<coord_t>(tri.front()));
+                pts.emplace_back(scaled<coord_t>(tri[1]));
+                pts.emplace_back(scaled<coord_t>(tri.back()));
+            }
+
             Points pts;
 
             void add(const Vec2f& pt) {
-                pts.emplace_back(scale_(pt.x()), scale_(pt.y()));
+                pts.emplace_back(scaled<coord_t>(pt));
                 assert(pts.size() <= 5);
             }
         };
@@ -2780,7 +2852,7 @@ void PrintObject::project_and_append_custom_facets(
         // Iterate over all triangles.
         tbb::parallel_for(
             tbb::blocked_range<size_t>(0, custom_facets.indices.size()),
-            [&](const tbb::blocked_range<size_t>& range) {
+            [center, &custom_facets, &tr, tr_det_sign, seam, layers, &projections_of_triangles](const tbb::blocked_range<size_t>& range) {
             for (size_t idx = range.begin(); idx < range.end(); ++ idx) {
 
             std::array<Vec3f, 3> facet;
@@ -2794,6 +2866,11 @@ void PrintObject::project_and_append_custom_facets(
             if (! seam && tr_det_sign * z_comp > 0.)
                 continue;
 
+            // The algorithm does not process vertical triangles, but it should for seam.
+            // In that case, tilt the triangle a bit so the projection does not degenerate.
+            if (seam && z_comp == 0.f)
+                facet[0].x() += float(EPSILON);
+
             // Sort the three vertices according to z-coordinate.
             std::sort(facet.begin(), facet.end(),
                       [](const Vec3f& pt1, const Vec3f&pt2) {
@@ -2801,30 +2878,43 @@ void PrintObject::project_and_append_custom_facets(
                       });
 
             std::array<Vec2f, 3> trianglef;
-            for (int i=0; i<3; ++i) {
-                trianglef[i] = Vec2f(facet[i].x(), facet[i].y());
-                trianglef[i] -= Vec2f(unscale<float>(this->center_offset().x()),
-                                      unscale<float>(this->center_offset().y()));
-            }
+            for (int i=0; i<3; ++i)
+                trianglef[i] = to_2d(facet[i]) - center;
 
             // Find lowest slice not below the triangle.
-            auto it = std::lower_bound(layers().begin(), layers().end(), facet[0].z()+EPSILON,
+            auto it = std::lower_bound(layers.begin(), layers.end(), facet[0].z()+EPSILON,
                           [](const Layer* l1, float z) {
                                return l1->slice_z < z;
                           });
 
             // Count how many projections will be generated for this triangle
             // and allocate respective amount in projections_of_triangles.
-            projections_of_triangles[idx].first_layer_id = it-layers().begin();
-            size_t last_layer_id = projections_of_triangles[idx].first_layer_id;
+            size_t first_layer_id = projections_of_triangles[idx].first_layer_id = it - layers.begin();
+            size_t last_layer_id  = first_layer_id;
             // The cast in the condition below is important. The comparison must
             // be an exact opposite of the one lower in the code where
             // the polygons are appended. And that one is on floats.
-            while (last_layer_id + 1 < layers().size()
-                && float(layers()[last_layer_id]->slice_z) <= facet[2].z())
+            while (last_layer_id + 1 < layers.size()
+                && float(layers[last_layer_id]->slice_z) <= facet[2].z())
                 ++last_layer_id;
-            projections_of_triangles[idx].polygons.resize(
-                last_layer_id - projections_of_triangles[idx].first_layer_id + 1);
+
+            if (first_layer_id == last_layer_id) {
+                // The triangle fits just a single slab, just project it. This also avoids division by zero for horizontal triangles.
+                float dz = facet[2].z() - facet[0].z();
+                assert(dz >= 0);
+                // The face is nearly horizontal and it crosses the slicing plane at first_layer_id - 1.
+                // Rather add this face to both the planes.
+                bool add_below = dz < float(2. * EPSILON) && first_layer_id > 0 && layers[first_layer_id - 1]->slice_z > facet[0].z() - EPSILON;
+                projections_of_triangles[idx].polygons.reserve(add_below ? 2 : 1);
+                projections_of_triangles[idx].polygons.emplace_back(trianglef);
+                if (add_below) {
+                    -- projections_of_triangles[idx].first_layer_id;
+                    projections_of_triangles[idx].polygons.emplace_back(trianglef);
+                }
+                continue;
+            }
+
+            projections_of_triangles[idx].polygons.resize(last_layer_id - first_layer_id + 1);
 
             // Calculate how to move points on triangle sides per unit z increment.
             Vec2f ta(trianglef[1] - trianglef[0]);
@@ -2840,7 +2930,7 @@ void PrintObject::project_and_append_custom_facets(
             bool stop = false;
 
             // Project a sub-polygon on all slices intersecting the triangle.
-            while (it != layers().end()) {
+            while (it != layers.end()) {
                 const float z = float((*it)->slice_z);
 
                 // Projections of triangle sides intersections with slices.
@@ -2858,7 +2948,7 @@ void PrintObject::project_and_append_custom_facets(
                 }
 
                 // This slice is above the triangle already.
-                if (z > facet[2].z() || it+1 == layers().end()) {
+                if (z > facet[2].z() || it+1 == layers.end()) {
                     proj->add(trianglef[2]);
                     stop = true;
                 }
@@ -2888,14 +2978,19 @@ void PrintObject::project_and_append_custom_facets(
         }); // end of parallel_for
 
         // Make sure that the output vector can be used.
-        expolys.resize(layers().size());
+        expolys.resize(layers.size());
 
         // Now append the collected polygons to respective layers.
         for (auto& trg : projections_of_triangles) {
             int layer_id = int(trg.first_layer_id);
-            for (const LightPolygon& poly : trg.polygons) {
+            for (LightPolygon &poly : trg.polygons) {
                 if (layer_id >= int(expolys.size()))
                     break; // part of triangle could be projected above top layer
+                assert(! poly.pts.empty());
+                // The resulting triangles are fed to the Clipper library, which seem to handle flipped triangles well.
+//                if (cross2(Vec2d((poly.pts[1] - poly.pts[0]).cast<double>()), Vec2d((poly.pts[2] - poly.pts[1]).cast<double>())) < 0)
+//                    std::swap(poly.pts.front(), poly.pts.back());
+                    
                 expolys[layer_id].emplace_back(std::move(poly.pts));
                 ++layer_id;
             }
@@ -2927,5 +3022,12 @@ const Layer* PrintObject::get_layer_at_printz(coordf_t print_z, coordf_t epsilon
 
 
 Layer* PrintObject::get_layer_at_printz(coordf_t print_z, coordf_t epsilon) { return const_cast<Layer*>(std::as_const(*this).get_layer_at_printz(print_z, epsilon)); }
+
+const Layer *PrintObject::get_first_layer_bellow_printz(coordf_t print_z, coordf_t epsilon) const
+{
+    coordf_t limit = print_z + epsilon;
+    auto it = Slic3r::lower_bound_by_predicate(m_layers.begin(), m_layers.end(), [limit](const Layer *layer) { return layer->print_z < limit; });
+    return (it == m_layers.begin()) ? nullptr : *(--it);
+}
 
 } // namespace Slic3r

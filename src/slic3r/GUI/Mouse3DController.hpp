@@ -9,6 +9,7 @@
 #include "hidapi.h"
 
 #include <queue>
+#include <atomic>
 #include <thread>
 #include <vector>
 #include <chrono>
@@ -189,20 +190,18 @@ public:
     bool handle_input(const DataPacketAxis& packet);
 #endif // __APPLE__
 
-#ifdef WIN32
+#ifdef _WIN32
 	bool handle_raw_input_win32(const unsigned char *data, const int packet_lenght);
 
     // Called by Win32 HID enumeration callback.
     void device_attached(const std::string &device);
-#if ENABLE_CTRL_M_ON_WINDOWS
     void device_detached(const std::string& device);
-#endif // ENABLE_CTRL_M_ON_WINDOWS
 
     // On Windows, the 3DConnexion driver sends out mouse wheel rotation events to an active application
     // if the application does not register at the driver. This is a workaround to ignore these superfluous
     // mouse wheel events.
     bool process_mouse_wheel() { return m_state.process_mouse_wheel(); }
-#endif // WIN32
+#endif // _WIN32
 
     // Apply the received 3DConnexion mouse events to the camera. Called from the UI rendering thread.
     bool apply(Camera& camera);

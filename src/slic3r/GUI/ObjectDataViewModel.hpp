@@ -171,13 +171,14 @@ public:
     }
 
     bool            SetValue(const wxVariant &variant, unsigned int col);
-
+    void            SetVolumeType(ModelVolumeType type) { m_volume_type = type; }
     void            SetBitmap(const wxBitmap &icon) { m_bmp = icon; }
     const wxBitmap& GetBitmap() const               { return m_bmp; }
     const wxString& GetName() const                 { return m_name; }
     ItemType        GetType() const                 { return m_type; }
 	void			SetIdx(const int& idx);
 	int             GetIdx() const                  { return m_idx; }
+    ModelVolumeType GetVolumeType()                 { return m_volume_type; }
 	t_layer_height_range    GetLayerRange() const   { return m_layer_range; }
     PrintIndicator  IsPrintable() const             { return m_printable; }
 
@@ -209,8 +210,10 @@ public:
         return true;
     }
 
-    // Set action icons for node
+    // Set action and extruder(if any exist) icons for node
     void        set_action_and_extruder_icons();
+    // set extruder icon for node
+    void        set_extruder_icon();
 	// Set printable icon for node
     void        set_printable_icon(PrintIndicator printable);
 
@@ -239,8 +242,8 @@ wxDECLARE_EVENT(wxCUSTOMEVT_LAST_VOLUME_IS_DELETED, wxCommandEvent);
 class ObjectDataViewModel :public wxDataViewModel
 {
     std::vector<ObjectDataViewModelNode*>       m_objects;
-    std::vector<wxBitmap*>                      m_volume_bmps;
-    wxBitmap*                                   m_warning_bmp { nullptr };
+    std::vector<wxBitmap>                       m_volume_bmps;
+    wxBitmap                                    m_warning_bmp;
 
     wxDataViewCtrl*                             m_ctrl { nullptr };
 
@@ -298,15 +301,15 @@ public:
 
     // helper methods to change the model
 
-    virtual unsigned int    GetColumnCount() const override { return 3;}
-    virtual wxString        GetColumnType(unsigned int col) const override{ return wxT("string"); }
+    unsigned int    GetColumnCount() const override { return 3;}
+    wxString        GetColumnType(unsigned int col) const override{ return wxT("string"); }
 
-    virtual void GetValue(  wxVariant &variant,
-                            const wxDataViewItem &item,
-                            unsigned int col) const override;
-    virtual bool SetValue(  const wxVariant &variant,
-                            const wxDataViewItem &item,
-                            unsigned int col) override;
+    void GetValue(  wxVariant &variant,
+                    const wxDataViewItem &item,
+                    unsigned int col) const override;
+    bool SetValue(  const wxVariant &variant,
+                    const wxDataViewItem &item,
+                    unsigned int col) override;
     bool SetValue(  const wxVariant &variant,
                     const int item_idx,
                     unsigned int col);
@@ -320,18 +323,17 @@ public:
                                         const wxDataViewItem &parent);
     wxDataViewItem  ReorganizeObjects( int current_id, int new_id);
 
-    virtual bool    IsEnabled(const wxDataViewItem &item, unsigned int col) const override;
+    bool    IsEnabled(const wxDataViewItem &item, unsigned int col) const override;
 
-    virtual wxDataViewItem  GetParent(const wxDataViewItem &item) const override;
+    wxDataViewItem  GetParent(const wxDataViewItem &item) const override;
     // get object item
     wxDataViewItem          GetTopParent(const wxDataViewItem &item) const;
-    virtual bool            IsContainer(const wxDataViewItem &item) const override;
-    virtual unsigned int    GetChildren(const wxDataViewItem &parent,
-                                        wxDataViewItemArray &array) const override;
+    bool            IsContainer(const wxDataViewItem &item) const override;
+    unsigned int    GetChildren(const wxDataViewItem &parent, wxDataViewItemArray &array) const override;
     void GetAllChildren(const wxDataViewItem &parent,wxDataViewItemArray &array) const;
     // Is the container just a header or an item with all columns
     // In our case it is an item with all columns
-    virtual bool    HasContainerColumns(const wxDataViewItem& WXUNUSED(item)) const override {	return true; }
+    bool    HasContainerColumns(const wxDataViewItem& WXUNUSED(item)) const override {	return true; }
 
     ItemType        GetItemType(const wxDataViewItem &item) const ;
     wxDataViewItem  GetItemByType(  const wxDataViewItem &parent_item,
@@ -347,9 +349,8 @@ public:
     void    UpdateObjectPrintable(wxDataViewItem parent_item);
     void    UpdateInstancesPrintable(wxDataViewItem parent_item);
 
-    void    SetVolumeBitmaps(const std::vector<wxBitmap*>& volume_bmps) { m_volume_bmps = volume_bmps; }
-    void    SetWarningBitmap(wxBitmap* bitmap)                          { m_warning_bmp = bitmap; }
     void    SetVolumeType(const wxDataViewItem &item, const Slic3r::ModelVolumeType type);
+    ModelVolumeType GetVolumeType(const wxDataViewItem &item);
     wxDataViewItem SetPrintableState( PrintIndicator printable, int obj_idx,
                                       int subobj_idx = -1, 
                                       ItemType subobj_type = itInstance);

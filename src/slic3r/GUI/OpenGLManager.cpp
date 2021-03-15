@@ -5,6 +5,8 @@
 #include "I18N.hpp"
 #include "3DScene.hpp"
 
+#include "libslic3r/Platform.hpp"
+
 #include <GL/glew.h>
 
 #include <boost/algorithm/string/split.hpp>
@@ -14,14 +16,10 @@
 #include <wx/glcanvas.h>
 #include <wx/msgdlg.h>
 
-#if ENABLE_HACK_CLOSING_ON_OSX_10_9_5
 #ifdef __APPLE__
 // Part of hack to remove crash when closing the application on OSX 10.9.5 when building against newer wxWidgets
 #include <wx/platinfo.h>
-#endif // __APPLE__
-#endif // ENABLE_HACK_CLOSING_ON_OSX_10_9_5
 
-#ifdef __APPLE__
 #include "../Utils/MacDarkMode.hpp"
 #endif // __APPLE__
 
@@ -202,34 +200,26 @@ bool OpenGLManager::s_compressed_textures_supported = false;
 OpenGLManager::EMultisampleState OpenGLManager::s_multisample = OpenGLManager::EMultisampleState::Unknown;
 OpenGLManager::EFramebufferType OpenGLManager::s_framebuffers_type = OpenGLManager::EFramebufferType::Unknown;
 
-#if ENABLE_HACK_CLOSING_ON_OSX_10_9_5
 #ifdef __APPLE__ 
 // Part of hack to remove crash when closing the application on OSX 10.9.5 when building against newer wxWidgets
 OpenGLManager::OSInfo OpenGLManager::s_os_info;
 #endif // __APPLE__ 
-#endif // ENABLE_HACK_CLOSING_ON_OSX_10_9_5
 
 OpenGLManager::~OpenGLManager()
 {
     m_shaders_manager.shutdown();
 
-#if ENABLE_HACK_CLOSING_ON_OSX_10_9_5
 #ifdef __APPLE__ 
     // This is an ugly hack needed to solve the crash happening when closing the application on OSX 10.9.5 with newer wxWidgets
     // The crash is triggered inside wxGLContext destructor
     if (s_os_info.major != 10 || s_os_info.minor != 9 || s_os_info.micro != 5)
     {
 #endif //__APPLE__
-#endif // ENABLE_HACK_CLOSING_ON_OSX_10_9_5
-
         if (m_context != nullptr)
             delete m_context;
-
-#if ENABLE_HACK_CLOSING_ON_OSX_10_9_5
 #ifdef __APPLE__ 
     }
 #endif //__APPLE__
-#endif // ENABLE_HACK_CLOSING_ON_OSX_10_9_5
 }
 
 bool OpenGLManager::init_gl()
@@ -286,14 +276,12 @@ wxGLContext* OpenGLManager::init_glcontext(wxGLCanvas& canvas)
     if (m_context == nullptr) {
         m_context = new wxGLContext(&canvas);
 
-#if ENABLE_HACK_CLOSING_ON_OSX_10_9_5
 #ifdef __APPLE__ 
         // Part of hack to remove crash when closing the application on OSX 10.9.5 when building against newer wxWidgets
         s_os_info.major = wxPlatformInfo::Get().GetOSMajorVersion();
         s_os_info.minor = wxPlatformInfo::Get().GetOSMinorVersion();
         s_os_info.micro = wxPlatformInfo::Get().GetOSMicroVersion();
 #endif //__APPLE__
-#endif // ENABLE_HACK_CLOSING_ON_OSX_10_9_5
     }
     return m_context;
 }
@@ -333,7 +321,13 @@ void OpenGLManager::detect_multisample(int* attribList)
 {
     int wxVersion = wxMAJOR_VERSION * 10000 + wxMINOR_VERSION * 100 + wxRELEASE_NUMBER;
     bool enable_multisample = wxVersion >= 30003;
-    s_multisample = (enable_multisample && wxGLCanvas::IsDisplaySupported(attribList)) ? EMultisampleState::Enabled : EMultisampleState::Disabled;
+    s_multisample = 
+        enable_multisample &&
+        // Disable multi-sampling on ChromeOS, as the OpenGL virtualization swaps Red/Blue channels with multi-sampling enabled,
+        // at least on some platforms.
+        platform_flavor() != PlatformFlavor::LinuxOnChromium &&
+        wxGLCanvas::IsDisplaySupported(attribList)
+        ? EMultisampleState::Enabled : EMultisampleState::Disabled;
     // Alternative method: it was working on previous version of wxWidgets but not with the latest, at least on Windows
     // s_multisample = enable_multisample && wxGLCanvas::IsExtensionSupported("WGL_ARB_multisample");
 }

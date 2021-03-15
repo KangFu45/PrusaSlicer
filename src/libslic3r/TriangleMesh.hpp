@@ -89,6 +89,12 @@ private:
     std::deque<uint32_t> find_unvisited_neighbors(std::vector<unsigned char> &facet_visited) const;
 };
 
+// Create an index of faces belonging to each vertex. The returned vector can
+// be indexed with vertex indices and contains a list of face indices for each
+// vertex.
+std::vector< std::vector<size_t> >
+create_neighbor_index(const indexed_triangle_set &its);
+
 enum FacetEdgeType { 
     // A general case, the cutting plane intersect a face at two different edges.
     feGeneral,
@@ -103,7 +109,7 @@ enum FacetEdgeType {
 class IntersectionReference
 {
 public:
-    IntersectionReference() : point_id(-1), edge_id(-1) {};
+    IntersectionReference() : point_id(-1), edge_id(-1) {}
     IntersectionReference(int point_id, int edge_id) : point_id(point_id), edge_id(edge_id) {}
     // Where is this intersection point located? On mesh vertex or mesh edge?
     // Only one of the following will be set, the other will remain set to -1.
@@ -116,7 +122,7 @@ public:
 class IntersectionPoint : public Point, public IntersectionReference
 {
 public:
-    IntersectionPoint() {};
+    IntersectionPoint() {}
     IntersectionPoint(int point_id, int edge_id, const Point &pt) : IntersectionReference(point_id, edge_id), Point(pt) {}
     IntersectionPoint(const IntersectionReference &ir, const Point &pt) : IntersectionReference(ir), Point(pt) {}
     // Inherits coord_t x, y
@@ -179,8 +185,17 @@ public:
     TriangleMeshSlicer() : mesh(nullptr) {}
 	TriangleMeshSlicer(const TriangleMesh* mesh) { this->init(mesh, [](){}); }
     void init(const TriangleMesh *mesh, throw_on_cancel_callback_type throw_on_cancel);
-    void slice(const std::vector<float> &z, SlicingMode mode, std::vector<Polygons>* layers, throw_on_cancel_callback_type throw_on_cancel) const;
-    void slice(const std::vector<float> &z, SlicingMode mode, const float closing_radius, std::vector<ExPolygons>* layers, throw_on_cancel_callback_type throw_on_cancel) const;
+    void slice(
+        const std::vector<float> &z, SlicingMode mode, size_t alternate_mode_first_n_layers, SlicingMode alternate_mode,
+        std::vector<Polygons>* layers, throw_on_cancel_callback_type throw_on_cancel) const;
+    void slice(const std::vector<float> &z, SlicingMode mode, std::vector<Polygons>* layers, throw_on_cancel_callback_type throw_on_cancel) const
+        { return this->slice(z, mode, 0, mode, layers, throw_on_cancel); }
+    void slice(
+        const std::vector<float> &z, SlicingMode mode, size_t alternate_mode_first_n_layers, SlicingMode alternate_mode, const float closing_radius,
+        std::vector<ExPolygons>* layers, throw_on_cancel_callback_type throw_on_cancel) const;
+    void slice(const std::vector<float> &z, SlicingMode mode, const float closing_radius, 
+        std::vector<ExPolygons>* layers, throw_on_cancel_callback_type throw_on_cancel) const
+        { this->slice(z, mode, 0, mode, closing_radius, layers, throw_on_cancel); }
     enum FacetSliceType {
         NoSlice = 0,
         Slicing = 1,

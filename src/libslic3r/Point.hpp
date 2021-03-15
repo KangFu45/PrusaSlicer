@@ -13,6 +13,7 @@
 
 namespace Slic3r {
 
+class BoundingBox;
 class Line;
 class MultiPoint;
 class Point;
@@ -55,23 +56,30 @@ typedef Eigen::Transform<double, 3, Eigen::Affine, Eigen::DontAlign> Transform3d
 
 inline bool operator<(const Vec2d &lhs, const Vec2d &rhs) { return lhs(0) < rhs(0) || (lhs(0) == rhs(0) && lhs(1) < rhs(1)); }
 
-inline int32_t cross2(const Vec2i32 &v1, const Vec2i32 &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
-inline int64_t cross2(const Vec2i64 &v1, const Vec2i64 &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
-inline float   cross2(const Vec2f   &v1, const Vec2f   &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
-inline double  cross2(const Vec2d   &v1, const Vec2d   &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
+template<int Options>
+int32_t cross2(const Eigen::MatrixBase<Eigen::Matrix<int32_t, 2, 1, Options>> &v1, const Eigen::MatrixBase<Eigen::Matrix<int32_t, 2, 1, Options>> &v2) = delete;
 
-template<class T, int N> Eigen::Matrix<T,  2, 1, Eigen::DontAlign>
-to_2d(const Eigen::Matrix<T,  N, 1, Eigen::DontAlign> &ptN) { return {ptN(0), ptN(1)}; }
+template<typename T, int Options>
+inline T cross2(const Eigen::MatrixBase<Eigen::Matrix<T, 2, 1, Options>> &v1, const Eigen::MatrixBase<Eigen::Matrix<T, 2, 1, Options>> &v2)
+{
+    return v1(0) * v2(1) - v1(1) * v2(0);
+}
 
-//inline Vec2i32 to_2d(const Vec3i32 &pt3) { return Vec2i32(pt3(0), pt3(1)); }
-//inline Vec2i64 to_2d(const Vec3i64 &pt3) { return Vec2i64(pt3(0), pt3(1)); }
-//inline Vec2f   to_2d(const Vec3f   &pt3) { return Vec2f  (pt3(0), pt3(1)); }
-//inline Vec2d   to_2d(const Vec3d   &pt3) { return Vec2d  (pt3(0), pt3(1)); }
+template<typename Derived, typename Derived2>
+inline typename Derived::Scalar cross2(const Eigen::MatrixBase<Derived> &v1, const Eigen::MatrixBase<Derived2> &v2)
+{
+    static_assert(std::is_same<typename Derived::Scalar, typename Derived2::Scalar>::value, "cross2(): Scalar types of 1st and 2nd operand must be equal.");
+    return v1(0) * v2(1) - v1(1) * v2(0);
+}
 
-inline Vec3d   to_3d(const Vec2d &v, double z) { return Vec3d(v(0), v(1), z); }
-inline Vec3f   to_3d(const Vec2f &v, float z) { return Vec3f(v(0), v(1), z); }
-inline Vec3i64 to_3d(const Vec2i64 &v, float z) { return Vec3i64(int64_t(v(0)), int64_t(v(1)), int64_t(z)); }
-inline Vec3crd to_3d(const Vec3crd &p, coord_t z) { return Vec3crd(p(0), p(1), z); }
+template<typename T, int Options>
+inline Eigen::Matrix<T, 2, 1, Eigen::DontAlign> perp(const Eigen::MatrixBase<Eigen::Matrix<T, 2, 1, Options>> &v) { return Eigen::Matrix<T, 2, 1, Eigen::DontAlign>(- v.y(), v.x()); }
+
+template<class T, int N, int Options>
+Eigen::Matrix<T, 2, 1, Eigen::DontAlign> to_2d(const Eigen::MatrixBase<Eigen::Matrix<T, N, 1, Options>> &ptN) { return { ptN(0), ptN(1) }; }
+
+template<class T, int Options>
+Eigen::Matrix<T, 3, 1, Eigen::DontAlign> to_3d(const Eigen::MatrixBase<Eigen::Matrix<T, 2, 1, Options>> & pt, const T z) { return { pt(0), pt(1), z }; }
 
 inline Vec2d   unscale(coord_t x, coord_t y) { return Vec2d(unscale<double>(x), unscale<double>(y)); }
 inline Vec2d   unscale(const Vec2crd &pt) { return Vec2d(unscale<double>(pt(0)), unscale<double>(pt(1))); }
@@ -132,6 +140,7 @@ public:
 
     void   rotate(double angle, const Point &center);
     Point  rotated(double angle) const { Point res(*this); res.rotate(angle); return res; }
+    Point  rotated(double cos_a, double sin_a) const { Point res(*this); res.rotate(cos_a, sin_a); return res; }
     Point  rotated(double angle, const Point &center) const { Point res(*this); res.rotate(angle, center); return res; }
     int    nearest_point_index(const Points &points) const;
     int    nearest_point_index(const PointConstPtrs &points) const;
@@ -173,6 +182,15 @@ inline bool is_approx(const Vec3d &p1, const Vec3d &p2, double epsilon = EPSILON
 	Vec3d d = (p2 - p1).cwiseAbs();
 	return d.x() < epsilon && d.y() < epsilon && d.z() < epsilon;
 }
+
+inline Point lerp(const Point &a, const Point &b, double t)
+{
+    assert((t >= -EPSILON) && (t <= 1. + EPSILON));
+    return ((1. - t) * a.cast<double>() + t * b.cast<double>()).cast<coord_t>();
+}
+
+extern BoundingBox get_extents(const Points &pts);
+extern BoundingBox get_extents(const std::vector<Points> &pts);
 
 namespace int128 {
     // Exact orientation predicate,
@@ -291,6 +309,33 @@ public:
             std::make_pair(nullptr, std::numeric_limits<double>::max());
     }
 
+    // Returns all pairs of values and squared distances.
+    std::vector<std::pair<const ValueType*, double>> find_all(const Vec2crd &pt) {
+        // Iterate over 4 closest grid cells around pt,
+        // Round pt to a closest grid_cell corner.
+        Vec2crd      grid_corner((pt(0)+(m_grid_resolution>>1))>>m_grid_log2, (pt(1)+(m_grid_resolution>>1))>>m_grid_log2);
+        // For four neighbors of grid_corner:
+        std::vector<std::pair<const ValueType*, double>> out;
+        const double r2 = double(m_search_radius) * m_search_radius;
+        for (coord_t neighbor_y = -1; neighbor_y < 1; ++ neighbor_y) {
+            for (coord_t neighbor_x = -1; neighbor_x < 1; ++ neighbor_x) {
+                // Range of fragment starts around grid_corner, close to pt.
+                auto range = m_map.equal_range(Vec2crd(grid_corner(0) + neighbor_x, grid_corner(1) + neighbor_y));
+                // Find the map entry closest to pt.
+                for (auto it = range.first; it != range.second; ++it) {
+                    const ValueType &value = it->second;
+                    const Vec2crd *pt2 = m_point_accessor(value);
+                    if (pt2 != nullptr) {
+                        const double d2 = (pt - *pt2).cast<double>().squaredNorm();
+                        if (d2 <= r2)
+                            out.emplace_back(&value, d2);
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
 private:
     typedef typename std::unordered_multimap<Vec2crd, ValueType, PointHash> map_type;
     PointAccessor m_point_accessor;
@@ -382,7 +427,7 @@ namespace boost { namespace polygon {
         typedef coord_t coordinate_type;
     
         static inline coordinate_type get(const Slic3r::Point& point, orientation_2d orient) {
-            return (coordinate_type)point((orient == HORIZONTAL) ? 0 : 1);
+            return static_cast<coordinate_type>(point((orient == HORIZONTAL) ? 0 : 1));
         }
     };
     

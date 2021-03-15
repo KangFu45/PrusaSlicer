@@ -327,7 +327,8 @@ struct PageMaterials: ConfigWizardPage
     Materials *materials;
     StringList *list_printer, *list_type, *list_vendor;
     PresetList *list_profile;
-    int sel_printer_count_prev, sel_printer_item_prev, sel_type_prev, sel_vendor_prev;
+    wxArrayInt sel_printers_prev;
+    int sel_type_prev, sel_vendor_prev;
     bool presets_loaded;
 
     wxFlexGridSizer *grid;
@@ -342,7 +343,7 @@ struct PageMaterials: ConfigWizardPage
     PageMaterials(ConfigWizard *parent, Materials *materials, wxString title, wxString shortname, wxString list1name);
 
     void reload_presets();
-	void update_lists(int sel1, int sel2, int sel3);
+	void update_lists(int sel_type, int sel_vendor, int last_selected_printer = -1);
 	void on_material_highlighted(int sel_material);
     void on_material_hovered(int sel_material);
     void select_material(int i);
@@ -391,6 +392,23 @@ struct PageReloadFromDisk : ConfigWizardPage
 
     PageReloadFromDisk(ConfigWizard* parent);
 };
+
+#ifdef _WIN32
+struct PageFilesAssociation : ConfigWizardPage
+{
+private:
+    wxCheckBox* cb_3mf{ nullptr };
+    wxCheckBox* cb_stl{ nullptr };
+//    wxCheckBox* cb_gcode;
+
+public:
+    PageFilesAssociation(ConfigWizard* parent);
+
+    bool associate_3mf() const { return cb_3mf->IsChecked(); }
+    bool associate_stl() const { return cb_stl->IsChecked(); }
+//    bool associate_gcode() const { return cb_gcode->IsChecked(); }
+};
+#endif // _WIN32
 
 struct PageMode: ConfigWizardPage
 {
@@ -499,6 +517,8 @@ private:
     ssize_t item_hover;
     size_t last_page;
 
+    int logo_height;
+
     int item_height() const { return std::max(bullet_black.bmp().GetSize().GetHeight(), em_w) + em_w; }
 
     void on_paint(wxPaintEvent &evt);
@@ -550,6 +570,9 @@ struct ConfigWizard::priv
     PageCustom       *page_custom = nullptr;
     PageUpdate       *page_update = nullptr;
     PageReloadFromDisk *page_reload_from_disk = nullptr;
+#ifdef _WIN32
+    PageFilesAssociation* page_files_association = nullptr;
+#endif // _WIN32
     PageMode         *page_mode = nullptr;
     PageVendors      *page_vendors = nullptr;
     Pages3rdparty     pages_3rdparty;
@@ -565,9 +588,7 @@ struct ConfigWizard::priv
 
     priv(ConfigWizard *q)
         : q(q)
-#if ENABLE_GCODE_VIEWER
         , appconfig_new(AppConfig::EAppMode::Editor)
-#endif // ENABLE_GCODE_VIEWER
         , filaments(T_FFF)
         , sla_materials(T_SLA)
     {}

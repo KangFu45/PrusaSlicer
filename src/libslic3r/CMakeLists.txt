@@ -21,6 +21,8 @@ add_library(libslic3r STATIC
     BoundingBox.hpp
     BridgeDetector.cpp
     BridgeDetector.hpp
+    Brim.cpp
+    Brim.hpp
     ClipperUtils.cpp
     ClipperUtils.hpp
     Config.cpp
@@ -58,10 +60,10 @@ add_library(libslic3r STATIC
     Fill/FillGyroid.hpp
     Fill/FillPlanePath.cpp
     Fill/FillPlanePath.hpp
+    Fill/FillLine.cpp
+    Fill/FillLine.hpp
     Fill/FillRectilinear.cpp
     Fill/FillRectilinear.hpp
-    Fill/FillRectilinear2.cpp
-    Fill/FillRectilinear2.hpp
     Flow.cpp
     Flow.hpp
     format.hpp
@@ -87,8 +89,6 @@ add_library(libslic3r STATIC
     GCode/PostProcessor.hpp
 #    GCode/PressureEqualizer.cpp
 #    GCode/PressureEqualizer.hpp
-    GCode/PreviewData.cpp
-    GCode/PreviewData.hpp
     GCode/PrintExtents.cpp
     GCode/PrintExtents.hpp
     GCode/SpiralVase.cpp
@@ -101,6 +101,8 @@ add_library(libslic3r STATIC
     GCode/WipeTower.hpp
     GCode/GCodeProcessor.cpp
     GCode/GCodeProcessor.hpp
+    GCode/AvoidCrossingPerimeters.cpp
+    GCode/AvoidCrossingPerimeters.hpp
     GCode.cpp
     GCode.hpp
     GCodeReader.cpp
@@ -120,6 +122,8 @@ add_library(libslic3r STATIC
     "${CMAKE_CURRENT_BINARY_DIR}/libslic3r_version.h"
     Line.cpp
     Line.hpp
+    LibraryCheck.cpp
+    LibraryCheck.hpp
     Model.cpp
     Model.hpp
     ModelArrange.hpp
@@ -128,8 +132,6 @@ add_library(libslic3r STATIC
     CustomGCode.hpp
     Arrange.hpp
     Arrange.cpp
-    MotionPlanner.cpp
-    MotionPlanner.hpp
     MultiPoint.cpp
     MultiPoint.hpp
     MutablePriorityQueue.hpp
@@ -139,10 +141,14 @@ add_library(libslic3r STATIC
     PerimeterGenerator.hpp
     PlaceholderParser.cpp
     PlaceholderParser.hpp
+    Platform.cpp
+    Platform.hpp
     Point.cpp
     Point.hpp
     Polygon.cpp
     Polygon.hpp
+    MutablePolygon.cpp
+    MutablePolygon.hpp
     PolygonTrimmer.cpp
     PolygonTrimmer.hpp
     Polyline.cpp
@@ -161,8 +167,8 @@ add_library(libslic3r STATIC
     PrintConfig.hpp
     PrintObject.cpp
     PrintRegion.cpp
-    PNGRead.hpp
-    PNGRead.cpp
+    PNGReadWrite.hpp
+    PNGReadWrite.cpp
     Semver.cpp
     ShortestPath.cpp
     ShortestPath.hpp
@@ -307,8 +313,6 @@ target_link_libraries(libslic3r
     nowide
     ${EXPAT_LIBRARIES}
     glu-libtess
-    polypartition
-    poly2tri
     qhull
     semver
     TBB::tbb

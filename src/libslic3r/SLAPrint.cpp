@@ -193,9 +193,10 @@ SLAPrint::ApplyStatus SLAPrint::apply(const Model &model, DynamicPrintConfig con
 #endif /* _DEBUG */
 
     // Normalize the config.
-    config.option("sla_print_settings_id",    true);
-    config.option("sla_material_settings_id", true);
-    config.option("printer_settings_id",      true);
+    config.option("sla_print_settings_id",        true);
+    config.option("sla_material_settings_id",     true);
+    config.option("printer_settings_id",          true);
+    config.option("physical_printer_settings_id", true);
     // Collect changes to print config.
     t_config_option_keys print_diff    = m_print_config.diff(config);
     t_config_option_keys printer_diff  = m_printer_config.diff(config);
@@ -228,9 +229,10 @@ SLAPrint::ApplyStatus SLAPrint::apply(const Model &model, DynamicPrintConfig con
         // update_apply_status(this->invalidate_step(slapsRasterize));
         m_placeholder_parser.apply_config(config);
         // Set the profile aliases for the PrintBase::output_filename()
-        m_placeholder_parser.set("print_preset",    config.option("sla_print_settings_id")->clone());
-        m_placeholder_parser.set("material_preset", config.option("sla_material_settings_id")->clone());
-        m_placeholder_parser.set("printer_preset",  config.option("printer_settings_id")->clone());
+        m_placeholder_parser.set("print_preset",            config.option("sla_print_settings_id")->clone());
+        m_placeholder_parser.set("material_preset",         config.option("sla_material_settings_id")->clone());
+        m_placeholder_parser.set("printer_preset",          config.option("printer_settings_id")->clone());
+        m_placeholder_parser.set("physical_printer_preset", config.option("physical_printer_settings_id")->clone());
     }
 
     // It is also safe to change m_config now after this->invalidate_state_by_config_options() call.
@@ -615,7 +617,7 @@ std::string SLAPrint::output_filename(const std::string &filename_base) const
     return this->PrintBase::output_filename(m_print_config.output_filename_format.value, ".sl1", filename_base, &config);
 }
 
-std::string SLAPrint::validate() const
+std::string SLAPrint::validate(std::string*) const
 {
     for(SLAPrintObject * po : m_objects) {
 
@@ -1118,7 +1120,7 @@ TriangleMesh SLAPrintObject::get_mesh(SLAPrintObjectStep step) const
         return this->pad_mesh();
     case slaposDrillHoles:
         if (m_hollowing_data)
-            return m_hollowing_data->hollow_mesh_with_holes;
+            return get_mesh_to_print();
         [[fallthrough]];
     default:
         return TriangleMesh();
@@ -1147,8 +1149,9 @@ const TriangleMesh& SLAPrintObject::pad_mesh() const
 
 const TriangleMesh &SLAPrintObject::hollowed_interior_mesh() const
 {
-    if (m_hollowing_data && m_config.hollowing_enable.getBool())
-        return m_hollowing_data->interior;
+    if (m_hollowing_data && m_hollowing_data->interior &&
+        m_config.hollowing_enable.getBool())
+        return sla::get_mesh(*m_hollowing_data->interior);
     
     return EMPTY_MESH;
 }

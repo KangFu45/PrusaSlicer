@@ -3,19 +3,10 @@
 
 #include "GLTexture.hpp"
 #include "3DScene.hpp"
-#if ENABLE_GCODE_VIEWER
 #include "GLModel.hpp"
-#endif // ENABLE_GCODE_VIEWER
 
 #include <tuple>
-#if ENABLE_GCODE_VIEWER
 #include <array>
-#endif // ENABLE_GCODE_VIEWER
-
-#if !ENABLE_GCODE_VIEWER
-class GLUquadric;
-typedef class GLUquadric GLUquadricObj;
-#endif // !ENABLE_GCODE_VIEWER
 
 namespace Slic3r {
 namespace GUI {
@@ -26,20 +17,14 @@ class GeometryBuffer
 {
     struct Vertex
     {
-        float position[3];
-        float tex_coords[2];
-
-        Vertex()
-        {
-            position[0] = 0.0f; position[1] = 0.0f; position[2] = 0.0f;
-            tex_coords[0] = 0.0f; tex_coords[1] = 0.0f;
-        }
+        Vec3f position = Vec3f::Zero();
+        Vec2f tex_coords = Vec2f::Zero();
     };
 
     std::vector<Vertex> m_vertices;
 
 public:
-    bool set_from_triangles(const Polygons& triangles, float z, bool generate_tex_coords);
+    bool set_from_triangles(const std::vector<Vec2f> &triangles, float z);
     bool set_from_lines(const Lines& lines, float z);
 
     const float* get_vertices_data() const;
@@ -52,7 +37,6 @@ public:
 
 class Bed3D
 {
-#if ENABLE_GCODE_VIEWER
     class Axes
     {
     public:
@@ -62,43 +46,16 @@ class Bed3D
         static const float DefaultTipLength;
 
     private:
-#else
-    struct Axes
-    {
-        static const double Radius;
-        static const double ArrowBaseRadius;
-        static const double ArrowLength;
-#endif // ENABLE_GCODE_VIEWER
-
-#if ENABLE_GCODE_VIEWER
         Vec3d m_origin{ Vec3d::Zero() };
         float m_stem_length{ DefaultStemLength };
         mutable GLModel m_arrow;
 
     public:
-#else
-        Vec3d origin;
-        Vec3d length;
-        GLUquadricObj* m_quadric;
-#endif // ENABLE_GCODE_VIEWER
-
-#if !ENABLE_GCODE_VIEWER
-        Axes();
-        ~Axes();
-#endif // !ENABLE_GCODE_VIEWER
-
-#if ENABLE_GCODE_VIEWER
         const Vec3d& get_origin() const { return m_origin; }
         void set_origin(const Vec3d& origin) { m_origin = origin; }
         void set_stem_length(float length);
         float get_total_length() const { return m_stem_length + DefaultTipLength; }
-#endif // ENABLE_GCODE_VIEWER
         void render() const;
-
-#if !ENABLE_GCODE_VIEWER
-    private:
-        void render_axis(double length) const;
-#endif // !ENABLE_GCODE_VIEWER
     };
 
 public:
@@ -120,13 +77,9 @@ private:
     GeometryBuffer m_triangles;
     GeometryBuffer m_gridlines;
     mutable GLTexture m_texture;
-#if ENABLE_GCODE_VIEWER
     mutable GLModel m_model;
     mutable Vec3d m_model_offset{ Vec3d::Zero() };
     std::array<float, 4> m_model_color{ 0.235f, 0.235f, 0.235f, 1.0f };
-#else
-    mutable GLBed m_model;
-#endif // ENABLE_GCODE_VIEWER
     // temporary texture shown until the main texture has still no levels compressed
     mutable GLTexture m_temp_texture;
     mutable unsigned int m_vbo_id;

@@ -43,6 +43,7 @@ class ObjectSettings;
 class ObjectList;
 class ObjectLayers;
 class Plater;
+class NotificationManager;
 struct GUI_InitParams;
 
 
@@ -97,7 +98,6 @@ static wxString dots("...", wxConvUTF8);
 
 class GUI_App : public wxApp
 {
-#if ENABLE_GCODE_VIEWER
 public:
     enum class EAppMode : unsigned char
     {
@@ -106,14 +106,13 @@ public:
     };
 
 private:
-#endif // ENABLE_GCODE_VIEWER
-
     bool            m_initialized { false };
     bool            m_app_conf_exists{ false };
-#if ENABLE_GCODE_VIEWER
     EAppMode        m_app_mode{ EAppMode::Editor };
     bool            m_is_recreating_gui{ false };
-#endif // ENABLE_GCODE_VIEWER
+#ifdef __linux__
+    bool            m_opengl_initialized{ false };
+#endif
 
     wxColour        m_color_label_modified;
     wxColour        m_color_label_sys;
@@ -149,19 +148,13 @@ public:
     bool            OnInit() override;
     bool            initialized() const { return m_initialized; }
 
-#if ENABLE_GCODE_VIEWER
     explicit GUI_App(EAppMode mode = EAppMode::Editor);
-#else
-    GUI_App();
-#endif // ENABLE_GCODE_VIEWER
     ~GUI_App() override;
 
-#if ENABLE_GCODE_VIEWER
     EAppMode get_app_mode() const { return m_app_mode; }
     bool is_editor() const { return m_app_mode == EAppMode::Editor; }
     bool is_gcode_viewer() const { return m_app_mode == EAppMode::GCodeViewer; }
     bool is_recreating_gui() const { return m_is_recreating_gui; }
-#endif // ENABLE_GCODE_VIEWER
 
     // To be called after the GUI is fully built up.
     // Process command line parameters cached in this->init_params,
@@ -175,6 +168,7 @@ public:
     static bool     dark_mode();
     void            init_label_colours();
     void            update_label_colours_from_appconfig();
+    void            update_label_colours();
     void            init_fonts();
 	void            update_fonts(const MainFrame *main_frame = nullptr);
     void            set_label_clr_modified(const wxColour& clr);
@@ -199,9 +193,7 @@ public:
     void            keyboard_shortcuts();
     void            load_project(wxWindow *parent, wxString& input_file) const;
     void            import_model(wxWindow *parent, wxArrayString& input_files) const;
-#if ENABLE_GCODE_VIEWER
     void            load_gcode(wxWindow* parent, wxString& input_file) const;
-#endif // ENABLE_GCODE_VIEWER
 
     static bool     catch_error(std::function<void()> cb, const std::string& err);
 
@@ -218,8 +210,9 @@ public:
 
     void            add_config_menu(wxMenuBar *menu);
     bool            check_unsaved_changes(const wxString &header = wxString());
+    bool            check_print_host_queue();
     bool            checked_tab(Tab* tab);
-    void            load_current_presets();
+    void            load_current_presets(bool check_printer_presets = true);
 
     wxString        current_language_code() const { return m_wxLocale->GetCanonicalName(); }
 	// Translate the language code to a code, for which Prusa Research maintains translations. Defaults to "en_US".
@@ -234,14 +227,14 @@ public:
     void            MacOpenFiles(const wxArrayString &fileNames) override;
 #endif /* __APPLE */
 
-    Sidebar&            sidebar();
-    ObjectManipulation* obj_manipul();
-    ObjectSettings*     obj_settings();
-    ObjectList*         obj_list();
-    ObjectLayers*       obj_layers();
-    Plater*             plater();
-    Model&      		model();
-
+    Sidebar&             sidebar();
+    ObjectManipulation*  obj_manipul();
+    ObjectSettings*      obj_settings();
+    ObjectList*          obj_list();
+    ObjectLayers*        obj_layers();
+    Plater*              plater();
+    Model&      		 model();
+    NotificationManager* notification_manager();
 
     // Parameters extracted from the command line to be passed to GUI after initialization.
     const GUI_InitParams* init_params { nullptr };
@@ -263,7 +256,7 @@ public:
 	RemovableDriveManager* removable_drive_manager() { return m_removable_drive_manager.get(); }
 	OtherInstanceMessageHandler* other_instance_message_handler() { return m_other_instance_message_handler.get(); }
     wxSingleInstanceChecker* single_instance_checker() {return m_single_instance_checker.get();}
-    
+
 	void        init_single_instance_checker(const std::string &name, const std::string &path);
 	void        set_instance_hash (const size_t hash) { m_instance_hash_int = hash; m_instance_hash_string = std::to_string(hash); }
     std::string get_instance_hash_string ()           { return m_instance_hash_string; }
@@ -287,6 +280,12 @@ public:
     bool is_gl_version_greater_or_equal_to(unsigned int major, unsigned int minor) const { return m_opengl_mgr.get_gl_info().is_version_greater_or_equal_to(major, minor); }
     bool is_glsl_version_greater_or_equal_to(unsigned int major, unsigned int minor) const { return m_opengl_mgr.get_gl_info().is_glsl_version_greater_or_equal_to(major, minor); }
 
+#ifdef __WXMSW__
+    void            associate_3mf_files();
+    void            associate_stl_files();
+    void            associate_gcode_files();
+#endif // __WXMSW__
+
 private:
     bool            on_init_inner();
 	void            init_app_config();
@@ -297,12 +296,8 @@ private:
 
     bool            config_wizard_startup();
 	void            check_updates(const bool verbose);
-
-#ifdef __WXMSW__
-    void            associate_3mf_files();
-    void            associate_gcode_files();
-#endif // __WXMSW__
 };
+
 DECLARE_APP(GUI_App)
 
 } // GUI

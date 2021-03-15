@@ -43,8 +43,14 @@ enum AuthorizationType {
     atKeyPassword, atUserPassword
 };
 
+enum class FuzzySkinType {
+    None,
+    External,
+    All,
+};
+
 enum InfillPattern : int {
-    ipRectilinear, ipMonotonic, ipGrid, ipTriangles, ipStars, ipCubic, ipLine, ipConcentric, ipHoneycomb, ip3DHoneycomb,
+    ipRectilinear, ipMonotonic, ipAlignedRectilinear, ipGrid, ipTriangles, ipStars, ipCubic, ipLine, ipConcentric, ipHoneycomb, ip3DHoneycomb,
     ipGyroid, ipHilbertCurve, ipArchimedeanChords, ipOctagramSpiral, ipAdaptiveCubic, ipSupportCubic, ipCount,
 };
 
@@ -57,6 +63,10 @@ enum class IroningType {
 
 enum SupportMaterialPattern {
     smpRectilinear, smpRectilinearGrid, smpHoneycomb,
+};
+
+enum SupportMaterialInterfacePattern {
+    smipAuto, smipRectilinear, smipConcentric,
 };
 
 enum SeamPosition {
@@ -80,6 +90,13 @@ enum SLAPillarConnectionMode {
     slapcmZigZag,
     slapcmCross,
     slapcmDynamic
+};
+
+enum BrimType {
+    btNoBrim,
+    btOuterOnly,
+    btInnerOnly,
+    btOuterAndInner,
 };
 
 template<> inline const t_config_enum_values& ConfigOptionEnum<PrinterTechnology>::get_enum_values() {
@@ -140,11 +157,22 @@ template<> inline const t_config_enum_values& ConfigOptionEnum<AuthorizationType
     return keys_map;
 }
 
+template<> inline const t_config_enum_values& ConfigOptionEnum<FuzzySkinType>::get_enum_values() {
+    static t_config_enum_values keys_map;
+    if (keys_map.empty()) {
+        keys_map["none"]                 = int(FuzzySkinType::None);
+        keys_map["external"]             = int(FuzzySkinType::External);
+        keys_map["all"]                  = int(FuzzySkinType::All);
+    }
+    return keys_map;
+}
+
 template<> inline const t_config_enum_values& ConfigOptionEnum<InfillPattern>::get_enum_values() {
     static t_config_enum_values keys_map;
     if (keys_map.empty()) {
         keys_map["rectilinear"]         = ipRectilinear;
         keys_map["monotonic"]           = ipMonotonic;
+        keys_map["alignedrectilinear"]  = ipAlignedRectilinear;
         keys_map["grid"]                = ipGrid;
         keys_map["triangles"]           = ipTriangles;
         keys_map["stars"]               = ipStars;
@@ -183,6 +211,16 @@ template<> inline const t_config_enum_values& ConfigOptionEnum<SupportMaterialPa
     return keys_map;
 }
 
+template<> inline const t_config_enum_values& ConfigOptionEnum<SupportMaterialInterfacePattern>::get_enum_values() {
+    static t_config_enum_values keys_map;
+    if (keys_map.empty()) {
+        keys_map["auto"]                = smipAuto;
+        keys_map["rectilinear"]         = smipRectilinear;
+        keys_map["concentric"]          = smipConcentric;
+    }
+    return keys_map;
+}
+
 template<> inline const t_config_enum_values& ConfigOptionEnum<SeamPosition>::get_enum_values() {
     static t_config_enum_values keys_map;
     if (keys_map.empty()) {
@@ -208,6 +246,17 @@ template<> inline const t_config_enum_values& ConfigOptionEnum<SLAPillarConnecti
         {"zigzag", slapcmZigZag},
         {"cross", slapcmCross},
         {"dynamic", slapcmDynamic}
+    };
+
+    return keys_map;
+}
+
+template<> inline const t_config_enum_values& ConfigOptionEnum<BrimType>::get_enum_values() {
+    static const t_config_enum_values keys_map = {
+        {"no_brim", btNoBrim},
+        {"outer_only", btOuterOnly},
+        {"inner_only", btInnerOnly},
+        {"outer_and_inner", btOuterAndInner}
     };
 
     return keys_map;
@@ -245,7 +294,7 @@ extern const PrintConfigDef print_config_def;
 
 class StaticPrintConfig;
 
-PrinterTechnology printer_technology(const ConfigBase &cfg);
+// Minimum object distance for arrangement, based on printer technology.
 double min_object_distance(const ConfigBase &cfg);
 
 // Slic3r dynamic configuration, used to override the configuration
@@ -426,6 +475,9 @@ class PrintObjectConfig : public StaticPrintConfig
 {
     STATIC_PRINT_CONFIG_CACHE(PrintObjectConfig)
 public:
+    ConfigOptionFloat               brim_offset;
+    ConfigOptionEnum<BrimType>      brim_type;
+    ConfigOptionFloat               brim_width;
     ConfigOptionBool                clip_multipart_objects;
     ConfigOptionBool                dont_support_bridges;
     ConfigOptionFloat               elefant_foot_compensation;
@@ -435,6 +487,10 @@ public:
     // Force the generation of solid shells between adjacent materials/volumes.
     ConfigOptionBool                interface_shells;
     ConfigOptionFloat               layer_height;
+    ConfigOptionFloat               raft_contact_distance;
+    ConfigOptionFloat               raft_expansion;
+    ConfigOptionPercent             raft_first_layer_density;
+    ConfigOptionFloat               raft_first_layer_expansion;
     ConfigOptionInt                 raft_layers;
     ConfigOptionEnum<SeamPosition>  seam_position;
 //    ConfigOptionFloat               seam_preferred_direction;
@@ -447,16 +503,19 @@ public:
     ConfigOptionFloat               support_material_angle;
     ConfigOptionBool                support_material_buildplate_only;
     ConfigOptionFloat               support_material_contact_distance;
+    ConfigOptionFloat               support_material_bottom_contact_distance;
     ConfigOptionInt                 support_material_enforce_layers;
     ConfigOptionInt                 support_material_extruder;
     ConfigOptionFloatOrPercent      support_material_extrusion_width;
     ConfigOptionBool                support_material_interface_contact_loops;
     ConfigOptionInt                 support_material_interface_extruder;
     ConfigOptionInt                 support_material_interface_layers;
+    ConfigOptionInt                 support_material_bottom_interface_layers;
     // Spacing between interface lines (the hatching distance). Set zero to get a solid interface.
     ConfigOptionFloat               support_material_interface_spacing;
     ConfigOptionFloatOrPercent      support_material_interface_speed;
     ConfigOptionEnum<SupportMaterialPattern> support_material_pattern;
+    ConfigOptionEnum<SupportMaterialInterfacePattern> support_material_interface_pattern;
     // Spacing between support material lines (the hatching distance).
     ConfigOptionFloat               support_material_spacing;
     ConfigOptionFloat               support_material_speed;
@@ -465,12 +524,16 @@ public:
     ConfigOptionInt                 support_material_threshold;
     ConfigOptionBool                support_material_with_sheath;
     ConfigOptionFloatOrPercent      support_material_xy_spacing;
+    ConfigOptionBool                thick_bridges;
     ConfigOptionFloat               xy_size_compensation;
     ConfigOptionBool                wipe_into_objects;
 
 protected:
     void initialize(StaticCacheBase &cache, const char *base_ptr)
     {
+        OPT_PTR(brim_offset);
+        OPT_PTR(brim_type);
+        OPT_PTR(brim_width);
         OPT_PTR(clip_multipart_objects);
         OPT_PTR(dont_support_bridges);
         OPT_PTR(elefant_foot_compensation);
@@ -479,6 +542,10 @@ protected:
         OPT_PTR(infill_only_where_needed);
         OPT_PTR(interface_shells);
         OPT_PTR(layer_height);
+        OPT_PTR(raft_contact_distance);
+        OPT_PTR(raft_expansion);
+        OPT_PTR(raft_first_layer_density);
+        OPT_PTR(raft_first_layer_expansion);
         OPT_PTR(raft_layers);
         OPT_PTR(seam_position);
         OPT_PTR(slice_closing_radius);
@@ -489,21 +556,25 @@ protected:
         OPT_PTR(support_material_angle);
         OPT_PTR(support_material_buildplate_only);
         OPT_PTR(support_material_contact_distance);
+        OPT_PTR(support_material_bottom_contact_distance);
         OPT_PTR(support_material_enforce_layers);
         OPT_PTR(support_material_interface_contact_loops);
         OPT_PTR(support_material_extruder);
         OPT_PTR(support_material_extrusion_width);
         OPT_PTR(support_material_interface_extruder);
         OPT_PTR(support_material_interface_layers);
+        OPT_PTR(support_material_bottom_interface_layers);
         OPT_PTR(support_material_interface_spacing);
         OPT_PTR(support_material_interface_speed);
         OPT_PTR(support_material_pattern);
+        OPT_PTR(support_material_interface_pattern);
         OPT_PTR(support_material_spacing);
         OPT_PTR(support_material_speed);
         OPT_PTR(support_material_synchronize_layers);
         OPT_PTR(support_material_xy_spacing);
         OPT_PTR(support_material_threshold);
         OPT_PTR(support_material_with_sheath);
+        OPT_PTR(thick_bridges);
         OPT_PTR(xy_size_compensation);
         OPT_PTR(wipe_into_objects);
     }
@@ -529,7 +600,13 @@ public:
     ConfigOptionFloat               fill_angle;
     ConfigOptionPercent             fill_density;
     ConfigOptionEnum<InfillPattern> fill_pattern;
+    ConfigOptionEnum<FuzzySkinType> fuzzy_skin;
+    ConfigOptionFloat               fuzzy_skin_thickness;
+    ConfigOptionFloat               fuzzy_skin_point_dist;
+    ConfigOptionBool                gap_fill_enabled;
     ConfigOptionFloat               gap_fill_speed;
+    ConfigOptionFloatOrPercent      infill_anchor;
+    ConfigOptionFloatOrPercent      infill_anchor_max;
     ConfigOptionInt                 infill_extruder;
     ConfigOptionFloatOrPercent      infill_extrusion_width;
     ConfigOptionInt                 infill_every_layers;
@@ -580,7 +657,13 @@ protected:
         OPT_PTR(fill_angle);
         OPT_PTR(fill_density);
         OPT_PTR(fill_pattern);
+        OPT_PTR(fuzzy_skin);
+        OPT_PTR(fuzzy_skin_thickness);
+        OPT_PTR(fuzzy_skin_point_dist);
+        OPT_PTR(gap_fill_enabled);
         OPT_PTR(gap_fill_speed);
+        OPT_PTR(infill_anchor);
+        OPT_PTR(infill_anchor_max);
         OPT_PTR(infill_extruder);
         OPT_PTR(infill_extrusion_width);
         OPT_PTR(infill_every_layers);
@@ -681,6 +764,7 @@ public:
     ConfigOptionStrings             filament_type;
     ConfigOptionBools               filament_soluble;
     ConfigOptionFloats              filament_cost;
+    ConfigOptionFloats              filament_spool_weight;
     ConfigOptionFloats              filament_max_volumetric_speed;
     ConfigOptionFloats              filament_loading_speed;
     ConfigOptionFloats              filament_loading_speed_start;
@@ -757,6 +841,7 @@ protected:
         OPT_PTR(filament_type);
         OPT_PTR(filament_soluble);
         OPT_PTR(filament_cost);
+        OPT_PTR(filament_spool_weight);
         OPT_PTR(filament_max_volumetric_speed);
         OPT_PTR(filament_loading_speed);
         OPT_PTR(filament_loading_speed_start);
@@ -821,11 +906,11 @@ class PrintConfig : public MachineEnvelopeConfig, public GCodeConfig
 public:
 
     ConfigOptionBool                avoid_crossing_perimeters;
+    ConfigOptionFloatOrPercent      avoid_crossing_perimeters_max_detour;
     ConfigOptionPoints              bed_shape;
     ConfigOptionInts                bed_temperature;
     ConfigOptionFloat               bridge_acceleration;
     ConfigOptionInts                bridge_fan_speed;
-    ConfigOptionFloat               brim_width;
     ConfigOptionBool                complete_objects;
     ConfigOptionFloats              colorprint_heights;
     ConfigOptionBools               cooling;
@@ -845,6 +930,7 @@ public:
     ConfigOptionFloatOrPercent      first_layer_extrusion_width;
     ConfigOptionFloatOrPercent      first_layer_speed;
     ConfigOptionInts                first_layer_temperature;
+    ConfigOptionInts                full_fan_speed_layer;
     ConfigOptionFloat               infill_acceleration;
     ConfigOptionBool                infill_first;
     ConfigOptionInts                max_fan_speed;
@@ -882,6 +968,7 @@ public:
     ConfigOptionFloat               wipe_tower_width;
     ConfigOptionFloat               wipe_tower_per_color_wipe;
     ConfigOptionFloat               wipe_tower_rotation_angle;
+    ConfigOptionFloat               wipe_tower_brim_width;
     ConfigOptionFloat               wipe_tower_bridging;
     ConfigOptionFloats              wiping_volumes_matrix;
     ConfigOptionFloats              wiping_volumes_extruders;
@@ -894,11 +981,11 @@ protected:
         this->MachineEnvelopeConfig::initialize(cache, base_ptr);
         this->GCodeConfig::initialize(cache, base_ptr);
         OPT_PTR(avoid_crossing_perimeters);
+        OPT_PTR(avoid_crossing_perimeters_max_detour);
         OPT_PTR(bed_shape);
         OPT_PTR(bed_temperature);
         OPT_PTR(bridge_acceleration);
         OPT_PTR(bridge_fan_speed);
-        OPT_PTR(brim_width);
         OPT_PTR(complete_objects);
         OPT_PTR(colorprint_heights);
         OPT_PTR(cooling);
@@ -918,6 +1005,7 @@ protected:
         OPT_PTR(first_layer_extrusion_width);
         OPT_PTR(first_layer_speed);
         OPT_PTR(first_layer_temperature);
+        OPT_PTR(full_fan_speed_layer);
         OPT_PTR(infill_acceleration);
         OPT_PTR(infill_first);
         OPT_PTR(max_fan_speed);
@@ -955,6 +1043,7 @@ protected:
         OPT_PTR(wipe_tower_width);
         OPT_PTR(wipe_tower_per_color_wipe);
         OPT_PTR(wipe_tower_rotation_angle);
+        OPT_PTR(wipe_tower_brim_width);
         OPT_PTR(wipe_tower_bridging);
         OPT_PTR(wiping_volumes_matrix);
         OPT_PTR(wiping_volumes_extruders);
@@ -1029,7 +1118,7 @@ public:
     // The percentage of smaller pillars compared to the normal pillar diameter
     // which are used in problematic areas where a normal pilla cannot fit.
     ConfigOptionPercent support_small_pillar_diameter_percent;
-    
+
     // How much bridge (supporting another pinhead) can be placed on a pillar.
     ConfigOptionInt   support_max_bridges_on_pillar;
 
@@ -1081,7 +1170,7 @@ public:
 
     // The height of the pad from the bottom to the top not considering the pit
     ConfigOptionFloat pad_wall_height /*= 5*/;
-    
+
     // How far should the pad extend around the contained geometry
     ConfigOptionFloat pad_brim_size;
 
@@ -1105,7 +1194,7 @@ public:
 
     // Disable the elevation (ignore its value) and use the zero elevation mode
     ConfigOptionBool pad_around_object;
-    
+
     ConfigOptionBool pad_around_object_everywhere;
 
     // This is the gap between the object bottom and the generated pad
@@ -1119,7 +1208,7 @@ public:
 
     // How much should the tiny connectors penetrate into the model body
     ConfigOptionFloat pad_object_connector_penetration;
-    
+
     // /////////////////////////////////////////////////////////////////////////
     // Model hollowing parameters:
     //   - Models can be hollowed out as part of the SLA print process
@@ -1128,17 +1217,17 @@ public:
     //   - Additional holes will be drilled into the hollow model to allow for
     //   - resin removal.
     // /////////////////////////////////////////////////////////////////////////
-    
+
     ConfigOptionBool hollowing_enable;
-    
-    // The minimum thickness of the model walls to maintain. Note that the 
+
+    // The minimum thickness of the model walls to maintain. Note that the
     // resulting walls may be thicker due to smoothing out fine cavities where
     // resin could stuck.
     ConfigOptionFloat hollowing_min_thickness;
-    
+
     // Indirectly controls the voxel size (resolution) used by openvdb
     ConfigOptionFloat hollowing_quality;
-   
+
     // Indirectly controls the minimum size of created cavities.
     ConfigOptionFloat hollowing_closing_distance;
 
@@ -1360,13 +1449,13 @@ Points get_bed_shape(const SLAPrinterConfig &cfg);
 // ModelConfig is a wrapper around DynamicPrintConfig with an addition of a timestamp.
 // Each change of ModelConfig is tracked by assigning a new timestamp from a global counter.
 // The counter is used for faster synchronization of the background slicing thread
-// with the front end by skipping synchronization of equal config dictionaries. 
-// The global counter is also used for avoiding unnecessary serialization of config 
+// with the front end by skipping synchronization of equal config dictionaries.
+// The global counter is also used for avoiding unnecessary serialization of config
 // dictionaries when taking an Undo snapshot.
 //
 // The global counter is NOT thread safe, therefore it is recommended to use ModelConfig from
 // the main thread only.
-// 
+//
 // As there is a global counter and it is being increased with each change to any ModelConfig,
 // if two ModelConfig dictionaries differ, they should differ with their timestamp as well.
 // Therefore copying the ModelConfig including its timestamp is safe as there is no harm

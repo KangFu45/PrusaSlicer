@@ -96,6 +96,14 @@ bool Polygon::make_clockwise()
     return false;
 }
 
+void Polygon::douglas_peucker(double tolerance)
+{
+    this->points.push_back(this->points.front());
+    Points p = MultiPoint::_douglas_peucker(this->points, tolerance);
+    p.pop_back();
+    this->points = std::move(p);
+}
+
 // Does an unoriented polygon contain a point?
 // Tested by counting intersections along a horizontal line.
 bool Polygon::contains(const Point &point) const
@@ -296,11 +304,6 @@ void Polygon::densify(float min_length, std::vector<float>* lengths_ptr)
         }
     }
     assert(points.size() == lengths.size() - 1);
-}
-
-BoundingBox get_extents(const Points &points)
-{ 
-	return BoundingBox(points);
 }
 
 BoundingBox get_extents(const Polygon &poly) 

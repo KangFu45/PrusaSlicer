@@ -132,7 +132,7 @@ wxSizer* ObjectLayers::create_layer(const t_layer_height_range& range, PlusMinus
     // Add control for the "Layer height"
 
     editor = new LayerRangeEditor(this, double_to_string(m_object->layer_config_ranges[range].option("layer_height")->getFloat()), etLayerHeight, set_focus_data,
-        [range, this](coordf_t layer_height, bool, bool)
+        [range](coordf_t layer_height, bool, bool)
     {
         return wxGetApp().obj_list()->edit_layer_range(range, layer_height);
     });
@@ -260,16 +260,15 @@ void ObjectLayers::msw_rescale()
                     editor->msw_rescale();
             }
 
-            const std::vector<size_t> btns = {2, 3};  // del_btn, add_btn
-            for (auto btn : btns)
-            {
-                wxSizerItem* b_item = item->GetSizer()->GetItem(btn);
-                if (b_item->IsWindow()) {
-                    auto button = dynamic_cast<PlusMinusButton*>(b_item->GetWindow());
-                    if (button != nullptr)
-                        button->msw_rescale();
-                }                
-            }
+            if (item->GetSizer()->GetItemCount() > 2) // if there are Add/Del buttons
+                for (size_t btn : {2, 3}) { // del_btn, add_btn
+                    wxSizerItem* b_item = item->GetSizer()->GetItem(btn);
+                    if (b_item->IsWindow()) {
+                        auto button = dynamic_cast<PlusMinusButton*>(b_item->GetWindow());
+                        if (button != nullptr)
+                            button->msw_rescale();
+                    }
+                }
         }
     }
     m_grid_sizer->Layout();
